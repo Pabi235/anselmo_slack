@@ -55,7 +55,7 @@ def main():
                 ledger["users"][user_id]["total_fines"] += 10
                 audit_messages.append(f"🚨 <@{user_id}> failed to report chores. Added 10€ fine.")
 
-    # --- 3. POST AUDIT REPORT ---
+# --- 3. POST AUDIT REPORT ---
     report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: {current_week}"}}]
     
     if audit_messages:
@@ -68,10 +68,15 @@ def main():
     report_blocks.append({"type": "divider"})
     report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"💰 *Current Cleaning Fund Pot: {total_pot}€*"}})
     
-    client.chat_postMessage(channel=CHANNEL_ID, blocks=report_blocks)
+    # FIX 1: Add the 'text' argument for mobile push notifications
+    client.chat_postMessage(
+        channel=CHANNEL_ID, 
+        blocks=report_blocks,
+        text=f"📊 Weekly Audit Results are in! Pot: {total_pot}€" 
+    )
     
-    # Reset metadata for next week
-    ledger["metadata"]["current_thread_ts"] = null
+    # FIX 2: Use Python's 'None' instead of JSON's 'null'
+    ledger["metadata"]["current_thread_ts"] = None
     save_ledger(ledger)
 
 if __name__ == "__main__":
