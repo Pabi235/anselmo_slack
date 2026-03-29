@@ -18,7 +18,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           ICAL_URL: ${{ secrets.ICAL_URL }}
-        run: python assign_chores.py
+        run: python task_assignment.py
         
       - name: Commit Ledger Update
         run: |
