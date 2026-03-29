@@ -1,0 +1,29 @@
+name: Monday Chore Assignment
+on:
+  schedule:
+    - cron: '0 8 * * 1' # 8:00 AM UTC every Monday
+  workflow_dispatch:
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.10' }
+      - run: pip install -r requirements.txt
+      - name: Run Assignment
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          ICAL_URL: ${{ secrets.ICAL_URL }}
+        run: python assign_chores.py
+        
+      - name: Commit Ledger Update
+        run: |
+          git config --global user.name "ChoreBot"
+          git config --global user.email "bot@example.com"
+          git add ledger.json
+          git commit -m "Update ledger with new thread ID" || echo "No changes to commit"
+          git push
