@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "current_thread_ts": "1774820574.262379",
+    "current_thread_ts": null,
     "current_week": "2026-13",
     "assigned_users_this_week": [
       "U0AN4FD067K"
@@ -9,8 +9,10 @@
   "users": {
     "U0AN4FD067K": {
       "name": "Pab",
-      "total_fines": 0,
-      "missed_weeks": []
+      "total_fines": 10,
+      "missed_weeks": [
+        "2026-13"
+      ]
     }
   }
 }
