@@ -54,7 +54,7 @@ def create_slack_blocks(assignments, week_num):
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*{user}*\n{task_string}"
+                "text": f"*<@{user_id}>*\n{task_string}"
             }
         })
         
