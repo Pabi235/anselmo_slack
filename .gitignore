@@ -1,0 +1,5 @@
+anselmo_slack/
+test_calendar.py
+.env
+__pycache__/
+*.pyc
