@@ -25,4 +25,5 @@ jobs:
           git config --global user.email "bot@example.com"
           git add ledger.json
           git commit -m "Audit completed: updated fines" || echo "No changes to commit"
+          git pull --rebase origin main
           git push
