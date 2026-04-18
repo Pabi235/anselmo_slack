@@ -51,9 +51,10 @@ def save_ledger(data):
     service = get_drive_service()
     file_id = get_file_id(service)
     
-    # Convert the Python dictionary back to a JSON string in memory
+    # Convert the Python dictionary back to a JSON string and encode to bytes
+    json_bytes = json.dumps(data, indent=2).encode('utf-8')
     media = MediaIoBaseUpload(
-        io.StringIO(json.dumps(data, indent=2)), 
+        io.BytesIO(json_bytes), 
         mimetype='application/json',
         resumable=True
     )

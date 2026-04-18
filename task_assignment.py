@@ -77,7 +77,11 @@ def main():
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "⚠️ *Reply 'done' in this thread by Sunday night to avoid a 10€ fine!*"}]})
 
     # 4. Send Message & Update Ledger
-    response = client.chat_postMessage(channel=CHANNEL_ID, blocks=blocks)
+    response = client.chat_postMessage(
+        channel=CHANNEL_ID, 
+        blocks=blocks,
+        text=f"🧹 Chore Rotation: Week {current_week_str}"
+    )
     
     ledger["metadata"]["current_thread_ts"] = response["ts"]
     ledger["metadata"]["current_week"] = current_week_str
