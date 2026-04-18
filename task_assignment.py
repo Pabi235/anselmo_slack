@@ -4,21 +4,14 @@ import datetime
 import requests
 from icalendar import Calendar
 from slack_sdk import WebClient
+from drive_storage import load_ledger, save_ledger
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID")
-CALENDAR_URL = os.environ.get("ICAL_URL") # Add this secret to GitHub!
+CALENDAR_URL = os.environ.get("ICAL_URL")
 
 ZONES = ["Kitchen", "Living Room", "Hallway", "Bathrooms", "Gardens"]
 client = WebClient(token=SLACK_BOT_TOKEN)
-
-def load_ledger():
-    with open("ledger.json", "r") as f:
-        return json.load(f)
-
-def save_ledger(data):
-    with open("ledger.json", "w") as f:
-        json.dump(data, f, indent=2)
 
 def get_away_users(ledger):
     """Downloads the .ics and checks if any housemate is away today."""

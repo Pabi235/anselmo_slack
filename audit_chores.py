@@ -2,16 +2,11 @@ import os
 import json
 import re
 from slack_sdk import WebClient
+from drive_storage import load_ledger, save_ledger
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID")
 client = WebClient(token=SLACK_BOT_TOKEN)
-
-def load_ledger():
-    with open("ledger.json", "r") as f: return json.load(f)
-
-def save_ledger(data):
-    with open("ledger.json", "w") as f: json.dump(data, f, indent=2)
 
 def main():
     ledger = load_ledger()

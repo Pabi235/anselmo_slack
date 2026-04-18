@@ -18,13 +18,6 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           ICAL_URL: ${{ secrets.ICAL_URL }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python task_assignment.py
-        
-      - name: Commit Ledger Update
-        run: |
-          git config --global user.name "ChoreBot"
-          git config --global user.email "bot@example.com"
-          git add ledger.json
-          git commit -m "Update ledger with new thread ID" || echo "No changes to commit"
-          git pull --rebase origin main
-          git push

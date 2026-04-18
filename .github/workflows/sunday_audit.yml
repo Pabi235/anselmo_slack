@@ -17,13 +17,6 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python audit_chores.py
-        
-      - name: Commit Ledger Update
-        run: |
-          git config --global user.name "ChoreBot"
-          git config --global user.email "bot@example.com"
-          git add ledger.json
-          git commit -m "Audit completed: updated fines" || echo "No changes to commit"
-          git pull --rebase origin main
-          git push
