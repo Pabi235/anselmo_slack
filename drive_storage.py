@@ -5,25 +5,28 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
-GCP_CREDS_JSON = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID")
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 def get_drive_service():
     """Authenticates using the Service Account JSON stored in GitHub Secrets."""
-    if not GCP_CREDS_JSON:
-        raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable is not set.")
+    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+    if not creds_json:
+        raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable is not set or empty.")
     
-    creds_dict = json.loads(GCP_CREDS_JSON)
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    return build('drive', 'v3', credentials=creds)
+    try:
+        creds_dict = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        return build('drive', 'v3', credentials=creds)
+    except json.JSONDecodeError:
+        raise ValueError("GCP_SERVICE_ACCOUNT_JSON is not a valid JSON string.")
 
 def get_file_id(service):
     """Finds the ledger.json file specifically inside your shared folder."""
-    if not GDRIVE_FOLDER_ID:
-         raise ValueError("GDRIVE_FOLDER_ID environment variable is not set.")
+    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
+    if not folder_id:
+         raise ValueError("GDRIVE_FOLDER_ID environment variable is not set or empty.")
          
-    query = f"'{GDRIVE_FOLDER_ID}' in parents and name='ledger.json' and trashed=false"
+    query = f"'{folder_id}' in parents and name='ledger.json' and trashed=false"
     results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     items = results.get('files', [])
     return items[0]['id'] if items else None
@@ -50,6 +53,7 @@ def save_ledger(data):
     """Overwrites the existing ledger.json in Google Drive with the updated data."""
     service = get_drive_service()
     file_id = get_file_id(service)
+    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
     
     # Convert the Python dictionary back to a JSON string and encode to bytes
     json_bytes = json.dumps(data, indent=2).encode('utf-8')
@@ -65,6 +69,9 @@ def save_ledger(data):
         print("Successfully updated ledger.json in Google Drive.")
     else:
         # Fallback just in case it got deleted
-        file_metadata = {'name': 'ledger.json', 'parents': [GDRIVE_FOLDER_ID]}
+        if not folder_id:
+            raise ValueError("GDRIVE_FOLDER_ID missing; cannot create new ledger.json")
+            
+        file_metadata = {'name': 'ledger.json', 'parents': [folder_id]}
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         print("Created new ledger.json in Google Drive.")
