@@ -7,21 +7,21 @@ def migrate():
         ledger = load_ledger()
         print("Successfully loaded ledger from Google Drive.")
         
-        # 1. Update users
+        # 1. Update users for Main Loop (4 zones instead of 5)
+        # We reset last_zone_index because the previous cycle was based on 5 zones.
         for user_id, user_data in ledger["users"].items():
-            if "last_zone_index" not in user_data:
-                user_data["last_zone_index"] = -1 # Start fresh
-                print(f"Added last_zone_index to {user_data['name']}")
+            user_data["last_main_index"] = -1
+            print(f"Initialized last_main_index for {user_data['name']}")
 
         # 2. Add history object
         if "history" not in ledger:
             ledger["history"] = {}
             print("Added history object to ledger.")
 
-        # 3. Initialize extra task pointer if not present
-        if "extra_task_pointer" not in ledger["metadata"]:
-            ledger["metadata"]["extra_task_pointer"] = 0
-            print("Added extra_task_pointer to metadata.")
+        # 3. Add Upstairs pointer
+        if "upstairs_bathroom_pointer" not in ledger["metadata"]:
+            ledger["metadata"]["upstairs_bathroom_pointer"] = 0
+            print("Added upstairs_bathroom_pointer to metadata.")
 
         save_ledger(ledger)
         print("✅ Migration complete. Ledger updated on Google Drive.")
