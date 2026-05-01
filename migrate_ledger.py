@@ -7,27 +7,32 @@ def migrate():
         ledger = load_ledger()
         print("Successfully loaded ledger from Google Drive.")
         
-        # 1. Update users for Main Loop (4 zones instead of 5)
-        # We reset last_zone_index because the previous cycle was based on 5 zones.
-        for user_id, user_data in ledger["users"].items():
-            user_data["last_main_index"] = -1
-            print(f"Initialized last_main_index for {user_data['name']}")
+        # Hard reset of indices to spread everyone across the 4 zones
+        # We set 'last_main_index' so that the NEXT assignment (last + 1) is unique.
+        mapping = {
+            "U0AN4FD067K": 3, # Pab -> Next: 0 (Kitchen)
+            "U0ATA3GRBRD": 0, # Angela -> Next: 1 (Living Room)
+            "U0ATA3JK24X": 1, # Josie -> Next: 2 (Hallways)
+            "U0AU4DWH2V7": 2  # Kika -> Next: 3 (Garden)
+        }
+        
+        for user_id, last_idx in mapping.items():
+            if user_id in ledger["users"]:
+                ledger["users"][user_id]["last_main_index"] = last_idx
+                print(f"Reset {ledger['users'][user_id]['name']} to index {last_idx}")
+            else:
+                print(f"Warning: User ID {user_id} not found in ledger.")
 
-        # 2. Add history object
-        if "history" not in ledger:
-            ledger["history"] = {}
-            print("Added history object to ledger.")
-
-        # 3. Add Upstairs pointer
-        if "upstairs_bathroom_pointer" not in ledger["metadata"]:
-            ledger["metadata"]["upstairs_bathroom_pointer"] = 0
-            print("Added upstairs_bathroom_pointer to metadata.")
+        # Ensure other metadata is correct
+        if "history" not in ledger: ledger["history"] = {}
+        ledger["metadata"]["upstairs_bathroom_pointer"] = 0
+        ledger["metadata"]["extra_task_pointer"] = 0 # No longer used but good to reset
 
         save_ledger(ledger)
-        print("✅ Migration complete. Ledger updated on Google Drive.")
+        print("✅ Hard reset complete. Run the assignment now to see the result.")
         
     except Exception as e:
-        print(f"❌ Migration failed: {e}")
+        print(f"❌ Reset failed: {e}")
 
 if __name__ == "__main__":
     migrate()

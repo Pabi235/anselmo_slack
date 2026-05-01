@@ -1,7 +1,7 @@
-name: Sunday Chore Audit
+name: Tuesday Chore Audit
 on:
   schedule:
-    - cron: '0 20 * * 0' # 8:00 PM UTC every Sunday
+    - cron: '0 20 * * 2' # 8:00 PM UTC every Tuesday
   workflow_dispatch:
 jobs:
   audit:

@@ -1,7 +1,7 @@
-name: Monday Chore Assignment
+name: Sunday Chore Assignment
 on:
   schedule:
-    - cron: '0 8 * * 1' # 8:00 AM UTC every Monday
+    - cron: '0 8 * * 0' # 8:00 AM UTC every Sunday
   workflow_dispatch:
 jobs:
   assign:

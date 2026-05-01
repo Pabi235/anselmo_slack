@@ -11,14 +11,18 @@ def get_drive_service():
     """Authenticates using the Service Account JSON stored in GitHub Secrets."""
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
     if not creds_json:
-        raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable is not set or empty.")
+        # Check if the key exists but is empty
+        if "GCP_SERVICE_ACCOUNT_JSON" in os.environ:
+            raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable exists but is EMPTY.")
+        else:
+            raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable is MISSING from the environment.")
     
     try:
         creds_dict = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         return build('drive', 'v3', credentials=creds)
-    except json.JSONDecodeError:
-        raise ValueError("GCP_SERVICE_ACCOUNT_JSON is not a valid JSON string.")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"GCP_SERVICE_ACCOUNT_JSON is not a valid JSON string. Error: {e}")
 
 def get_file_id(service):
     """Finds the ledger.json file specifically inside your shared folder."""

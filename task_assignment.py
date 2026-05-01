@@ -54,9 +54,23 @@ def get_away_users(ledger):
 
 def main():
     ledger = load_ledger()
-    year, week_num = datetime.date.today().isocalendar()[:2]
-    current_week_str = f"{year}-{week_num:02d}"
+    today = datetime.date.today()
     
+    # Calculate Sunday (start of week) and next Sunday (end of week)
+    # Python's weekday(): Monday=0, Sunday=6
+    days_to_subtract = (today.weekday() + 1) % 7 # If Sunday (6), subtract 0. If Monday (0), subtract 1.
+    start_of_week = today - datetime.timedelta(days=days_to_subtract)
+    end_of_week = start_of_week + datetime.timedelta(days=7)
+    
+    year, week_num = start_of_week.isocalendar()[:2]
+    current_week_str = f"{year}-{week_num:02d}"
+    date_range_str = f"{start_of_week.strftime('%Y-%m-%d')} to {end_of_week.strftime('%Y-%m-%d')}"
+    
+    # Calculate audit deadline (the following Tuesday from creation)
+    # If today is Sunday (6), Tuesday is in 2 days.
+    audit_deadline = today + datetime.timedelta(days=(1 - today.weekday() + 7) % 7 if today.weekday() != 1 else 7)
+    deadline_str = audit_deadline.strftime('%A, %B %d')
+
     all_users = list(ledger["users"].keys())
     away_users = get_away_users(ledger)
     home_users = [u for u in all_users if u not in away_users]
@@ -64,9 +78,8 @@ def main():
     assignments = {user: [] for user in home_users}
 
     # --- 1. MAIN LOOP ASSIGNMENT (Kitchen, Living Room, Hallways, Garden) ---
-    # a. Calculate intended assignments based on rotation state
     user_to_intended_zone_idx = {}
-    zone_idx_to_user = {} # Reverse mapping for zones that ARE assigned
+    zone_idx_to_user = {}
     
     for user_id in home_users:
         last_idx = ledger["users"][user_id].get("last_main_index", -1)
@@ -74,67 +87,48 @@ def main():
         user_to_intended_zone_idx[user_id] = next_idx
         zone_idx_to_user[next_idx] = user_id
 
-    # b. Priority Check: Ensure high priority zones are assigned if someone is away
+    # b. Priority Check
     unassigned_main_indices = [i for i in range(len(MAIN_ZONES)) if i not in zone_idx_to_user]
     
     if unassigned_main_indices:
-        # Sort unassigned by priority (lower index = higher priority)
         unassigned_main_indices.sort()
-        
-        # Sort assigned users by the priority of the zone they CURRENTLY have (descending index = lower priority)
-        # We want to swap the lowest priority assigned zone for the highest priority unassigned zone.
         assigned_main_indices = sorted(zone_idx_to_user.keys(), reverse=True)
         
         for unassigned_idx in unassigned_main_indices:
             if not assigned_main_indices: break
-            
-            # If the unassigned zone is more important (lower index) than the least important assigned zone
             lowest_priority_assigned_idx = assigned_main_indices[0]
             if unassigned_idx < lowest_priority_assigned_idx:
                 user_id = zone_idx_to_user[lowest_priority_assigned_idx]
-                
-                # Perform the swap in our local mapping
-                print(f"Priority Swap: Assigning {MAIN_ZONES[unassigned_idx]} to {ledger['users'][user_id]['name']} instead of {MAIN_ZONES[lowest_priority_assigned_idx]}")
                 user_to_intended_zone_idx[user_id] = unassigned_idx
-                
-                # Update tracking for next iteration of this priority loop
                 del zone_idx_to_user[lowest_priority_assigned_idx]
                 zone_idx_to_user[unassigned_idx] = user_id
                 assigned_main_indices.pop(0)
 
-    # c. Finalize Main Loop assignments and update state
     for user_id, zone_idx in user_to_intended_zone_idx.items():
         assignments[user_id].append(MAIN_ZONES[zone_idx])
         ledger["users"][user_id]["last_main_index"] = zone_idx
 
-    # --- 2. UPSTAIRS BATHROOM LOOP (Kika, Josie, Angela) ---
+    # --- 2. UPSTAIRS BATHROOM LOOP ---
     upstairs_home_users = [u for u in UPSTAIRS_USERS if u in home_users]
     if upstairs_home_users:
         pointer = ledger["metadata"].get("upstairs_bathroom_pointer", 0)
-        
-        # Find the next person in the UPSTAIRS_USERS list who is home
-        # We try up to 3 times to find someone
         assigned_upstairs = False
         for i in range(len(UPSTAIRS_USERS)):
             current_target = UPSTAIRS_USERS[(pointer + i) % len(UPSTAIRS_USERS)]
             if current_target in home_users:
                 assignments[current_target].append("Upstairs Bathroom")
-                # Move pointer to the NEXT person for next week
                 ledger["metadata"]["upstairs_bathroom_pointer"] = (pointer + i + 1) % len(UPSTAIRS_USERS)
                 assigned_upstairs = True
                 break
-        
         if not assigned_upstairs:
             print("No one home for Upstairs Bathroom duty.")
 
-    # --- 3. DOWNSTAIRS BATHROOM (Pab) ---
+    # --- 3. DOWNSTAIRS BATHROOM ---
     if DOWNSTAIRS_USER in home_users:
         assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
-    else:
-        print("Pab is away; Downstairs Bathroom unassigned.")
 
     # --- 4. FORMAT SLACK MESSAGE ---
-    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"🧹 Chore Rotation: Week {current_week_str}"}}]
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"🧹 Chore Rotation: Week {year} {date_range_str}"}}]
     
     if away_users:
         away_names = ", ".join([ledger["users"][u]["name"] for u in away_users])
@@ -148,20 +142,19 @@ def main():
         
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<@{user_id}>*\n" + "\n".join(task_list)}})
         
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "⚠️ *Reply 'done' in this thread by Sunday night to avoid a 10€ fine!*"}]})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✨ *Friendly reminder: Please ensure your cleaning is done by {deadline_str}!*"}]})
 
     # --- 5. SEND MESSAGE & UPDATE LEDGER ---
     response = client.chat_postMessage(
         channel=CHANNEL_ID, 
         blocks=blocks,
-        text=f"🧹 Chore Rotation: Week {current_week_str}"
+        text=f"🧹 Chore Rotation: Week {year} {date_range_str}"
     )
     
     ledger["metadata"]["current_thread_ts"] = response["ts"]
     ledger["metadata"]["current_week"] = current_week_str
     ledger["metadata"]["assigned_users_this_week"] = home_users
     
-    # Initialize history for this week
     if "history" not in ledger: ledger["history"] = {}
     ledger["history"][current_week_str] = {
         "assignments": assignments,
