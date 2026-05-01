@@ -26,6 +26,7 @@ def migrate():
         # Ensure other metadata is correct
         if "history" not in ledger: ledger["history"] = {}
         ledger["metadata"]["upstairs_bathroom_pointer"] = 0
+        ledger["metadata"]["recent_threads"] = []
         ledger["metadata"]["extra_task_pointer"] = 0 # No longer used but good to reset
 
         save_ledger(ledger)

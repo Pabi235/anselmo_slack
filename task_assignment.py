@@ -152,6 +152,11 @@ def main():
         text=f"🧹 Chore Rotation: Week {year} {date_range_str}"
     )
     
+    # Maintain a rolling list of the last 3 threads in metadata
+    recent_threads = ledger["metadata"].get("recent_threads", [])
+    recent_threads.append({"ts": response["ts"], "week": current_week_str})
+    ledger["metadata"]["recent_threads"] = recent_threads[-3:] # Keep only last 3
+    
     ledger["metadata"]["current_thread_ts"] = response["ts"]
     ledger["metadata"]["current_week"] = current_week_str
     ledger["metadata"]["assigned_users_this_week"] = home_users

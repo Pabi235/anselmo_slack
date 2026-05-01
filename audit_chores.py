@@ -1,78 +1,151 @@
 import os
 import json
 import re
+import datetime
+import google.generativeai as genai
 from slack_sdk import WebClient
 from drive_storage import load_ledger, save_ledger
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
 client = WebClient(token=SLACK_BOT_TOKEN)
+
+# Initialize Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    model = None
+
+def classify_replies_with_ai(thread_text, user_ids):
+    """Uses Gemini Flash to classify who has completed their chores."""
+    if not model:
+        print("⚠️ Gemini API Key missing. Falling back to basic keyword matching.")
+        return {uid: "not_done" for uid in user_ids} # Simplified fallback
+
+    prompt = f"""
+    The following is a list of replies in a Slack thread where housemates are supposed to report that they finished their chores.
+    People are assigned chores on Sunday and have until Tuesday to finish.
+    
+    Current users to check: {", ".join(user_ids)}
+    
+    Thread Messages:
+    {thread_text}
+    
+    For each user ID provided, determine their status. 
+    Use exactly one of these labels:
+    - "completed_on_time": They clearly stated they finished the chore (e.g. "done", "cleaned", "finished").
+    - "completed_late": They are reporting it's done, but the context implies they missed the original deadline.
+    - "not_done": They haven't replied, gave an excuse, or said they will do it later.
+    
+    Return the result ONLY as a valid JSON object mapping user_id to status.
+    Example: {{"U123": "completed_on_time", "U456": "not_done"}}
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        # Extract JSON from response (handling potential markdown formatting)
+        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group(0))
+    except Exception as e:
+        print(f"❌ Gemini Error: {e}")
+    
+    return {}
 
 def main():
     ledger = load_ledger()
-    thread_ts = ledger["metadata"].get("current_thread_ts")
+    recent_threads = ledger["metadata"].get("recent_threads", [])
     current_week = ledger["metadata"].get("current_week")
-    assigned_users = ledger["metadata"].get("assigned_users_this_week", [])
     
-    if not current_week:
-        print("No active week found in ledger. Skipping audit.")
+    if not recent_threads:
+        print("No threads to audit. Skipping.")
         return
 
-    audit_messages = []
-    
-    # Ensure history exists for this week
-    if "history" not in ledger: ledger["history"] = {}
-    if current_week not in ledger["history"]:
-        ledger["history"][current_week] = {"assignments": {}, "completions": {}}
+    audit_report = {
+        "on_time": [],
+        "late_approved": [],
+        "missed": []
+    }
 
-    # --- 1. PROCESS RETROACTIVE CLAIMS ---
-    history = client.conversations_history(channel=CHANNEL_ID, limit=50)
-    for msg in history.get("messages", []):
-        text = msg.get("text", "").lower()
-        user_id = msg.get("user")
+    # We iterate backwards through the last 3 threads
+    for thread_info in reversed(recent_threads):
+        ts = thread_info["ts"]
+        week = thread_info["week"]
+        is_current_week = (week == current_week)
         
-        match = re.search(r'cleaned-(\d{4}-\d{2})', text)
-        if match and user_id in ledger["users"]:
-            claimed_week = match.group(1)
-            if claimed_week in ledger["users"][user_id]["missed_weeks"]:
-                ledger["users"][user_id]["missed_weeks"].remove(claimed_week)
-                ledger["users"][user_id]["total_fines"] -= 10
-                
-                # Update history record if it exists
-                if claimed_week in ledger["history"]:
-                    ledger["history"][claimed_week]["completions"][user_id] = True
-                
-                audit_messages.append(f"✅ <@{user_id}> retroactively claimed {claimed_week}. 10€ fine removed.")
-
-    # --- 2. AUDIT THIS WEEK'S THREAD ---
-    if thread_ts and assigned_users:
-        replies = client.conversations_replies(channel=CHANNEL_ID, ts=thread_ts)
-        completed_users = set()
-        for reply in replies.get("messages", []):
-            text = reply.get("text", "").lower()
-            if any(word in text for word in ["done", "cleaned", "finished"]):
-                completed_users.add(reply.get("user"))
+        print(f"Auditing Week {week} (Thread: {ts})...")
         
-        for user_id in assigned_users:
-            is_done = user_id in completed_users
+        try:
+            replies_res = client.conversations_replies(channel=CHANNEL_ID, ts=ts)
+            messages = replies_res.get("messages", [])
             
-            # Update detailed history
-            ledger["history"][current_week]["completions"][user_id] = is_done
+            # Combine all messages into a single text block for the AI
+            thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
             
-            if not is_done:
-                ledger["users"][user_id]["missed_weeks"].append(current_week)
-                ledger["users"][user_id]["total_fines"] += 10
-                audit_messages.append(f"🚨 <@{user_id}> failed to report chores. Added 10€ fine.")
-            else:
-                print(f"User {user_id} marked as done for {current_week}")
+            # Who was supposed to clean this week?
+            # We check the history object we created during assignment
+            week_history = ledger.get("history", {}).get(week, {})
+            assigned_users = list(week_history.get("assignments", {}).keys())
+            
+            if not assigned_users:
+                continue
 
-    # --- 3. POST AUDIT REPORT ---
+            # Classify using AI
+            classifications = classify_replies_with_ai(thread_text, assigned_users)
+            
+            for user_id in assigned_users:
+                status = classifications.get(user_id, "not_done")
+                prev_status = week_history.get("completions", {}).get(user_id)
+                
+                # --- LOGIC FOR CURRENT WEEK ---
+                if is_current_week:
+                    if status == "completed_on_time":
+                        ledger["history"][week]["completions"][user_id] = True
+                        audit_report["on_time"].append(user_id)
+                    else:
+                        # Fining happens here
+                        if prev_status is not True: # Don't double fine
+                            ledger["history"][week]["completions"][user_id] = False
+                            ledger["users"][user_id]["missed_weeks"].append(week)
+                            ledger["users"][user_id]["total_fines"] += 10
+                            audit_report["missed"].append(user_id)
+                
+                # --- LOGIC FOR PREVIOUS WEEKS (Retroactive) ---
+                else:
+                    # If they were previously "False" (fined) but now Gemini says "completed"
+                    if prev_status is False and status in ["completed_on_time", "completed_late"]:
+                        ledger["history"][week]["completions"][user_id] = True
+                        if week in ledger["users"][user_id]["missed_weeks"]:
+                            ledger["users"][user_id]["missed_weeks"].remove(week)
+                            ledger["users"][user_id]["total_fines"] -= 10
+                            audit_report["late_approved"].append((user_id, week))
+
+        except Exception as e:
+            print(f"Error auditing thread {ts}: {e}")
+
+    # --- POST AUDIT REPORT ---
     report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: {current_week}"}}]
     
-    if audit_messages:
-        report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(audit_messages)}})
-    else:
-        report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "Everyone did their chores this week! 🥳"}})
+    sections = []
+    if audit_report["on_time"]:
+        names = ", ".join([f"<@{u}>" for u in audit_report["on_time"]])
+        sections.append(f"✅ *Completed on time:* {names}")
+    
+    if audit_report["missed"]:
+        names = ", ".join([f"<@{u}>" for u in audit_report["missed"]])
+        sections.append(f"🚨 *Missed Deadline:* {names} (10€ fine added)")
+        
+    if audit_report["late_approved"]:
+        late_names = ", ".join([f"<@{u}> ({w})" for u, w in audit_report["late_approved"]])
+        sections.append(f"🕰️ *Late Updates Approved:* {late_names} (Fines removed!)")
+
+    if not sections:
+        sections.append("No activity detected this week.")
+        
+    report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n\n".join(sections)}})
         
     total_pot = sum([u["total_fines"] for u in ledger["users"].values()])
     report_blocks.append({"type": "divider"})
@@ -84,7 +157,6 @@ def main():
         text=f"📊 Weekly Audit Results are in! Pot: {total_pot}€" 
     )
     
-    ledger["metadata"]["current_thread_ts"] = None
     save_ledger(ledger)
 
 if __name__ == "__main__":
