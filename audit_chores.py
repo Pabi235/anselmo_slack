@@ -23,7 +23,7 @@ def classify_replies_with_ai(thread_text, user_ids):
     """Uses Gemini Flash to classify who has completed their chores."""
     if not model:
         print("⚠️ Gemini API Key missing. Falling back to basic keyword matching.")
-        return {uid: "not_done" for uid in user_ids} # Simplified fallback
+        return {uid: "not_done" for uid in user_ids}
 
     prompt = f"""
     The following is a list of replies in a Slack thread where housemates are supposed to report that they finished their chores.
@@ -46,7 +46,6 @@ def classify_replies_with_ai(thread_text, user_ids):
     
     try:
         response = model.generate_content(prompt)
-        # Extract JSON from response (handling potential markdown formatting)
         json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_match:
             return json.loads(json_match.group(0))
@@ -64,58 +63,53 @@ def main():
         print("No threads to audit. Skipping.")
         return
 
+    # Calculate date range for the current week header (to match Sunday assignment)
+    today = datetime.date.today()
+    days_to_subtract = (today.weekday() + 1) % 7 
+    start_of_week = today - datetime.timedelta(days=days_to_subtract)
+    end_of_week = start_of_week + datetime.timedelta(days=7)
+    date_range_str = f"{start_of_week.strftime('%Y-%m-%d')} to {end_of_week.strftime('%Y-%m-%d')}"
+    year = start_of_week.year
+
     audit_report = {
         "on_time": [],
         "late_approved": [],
         "missed": []
     }
 
-    # We iterate backwards through the last 3 threads
     for thread_info in reversed(recent_threads):
         ts = thread_info["ts"]
         week = thread_info["week"]
         is_current_week = (week == current_week)
         
-        print(f"Auditing Week {week} (Thread: {ts})...")
-        
         try:
             replies_res = client.conversations_replies(channel=CHANNEL_ID, ts=ts)
             messages = replies_res.get("messages", [])
-            
-            # Combine all messages into a single text block for the AI
             thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
             
-            # Who was supposed to clean this week?
-            # We check the history object we created during assignment
             week_history = ledger.get("history", {}).get(week, {})
             assigned_users = list(week_history.get("assignments", {}).keys())
             
             if not assigned_users:
                 continue
 
-            # Classify using AI
             classifications = classify_replies_with_ai(thread_text, assigned_users)
             
             for user_id in assigned_users:
                 status = classifications.get(user_id, "not_done")
                 prev_status = week_history.get("completions", {}).get(user_id)
                 
-                # --- LOGIC FOR CURRENT WEEK ---
                 if is_current_week:
                     if status == "completed_on_time":
                         ledger["history"][week]["completions"][user_id] = True
                         audit_report["on_time"].append(user_id)
                     else:
-                        # Fining happens here
-                        if prev_status is not True: # Don't double fine
+                        if prev_status is not True: 
                             ledger["history"][week]["completions"][user_id] = False
                             ledger["users"][user_id]["missed_weeks"].append(week)
                             ledger["users"][user_id]["total_fines"] += 10
                             audit_report["missed"].append(user_id)
-                
-                # --- LOGIC FOR PREVIOUS WEEKS (Retroactive) ---
                 else:
-                    # If they were previously "False" (fined) but now Gemini says "completed"
                     if prev_status is False and status in ["completed_on_time", "completed_late"]:
                         ledger["history"][week]["completions"][user_id] = True
                         if week in ledger["users"][user_id]["missed_weeks"]:
@@ -127,7 +121,7 @@ def main():
             print(f"Error auditing thread {ts}: {e}")
 
     # --- POST AUDIT REPORT ---
-    report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: {current_week}"}}]
+    report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: Week {year} {date_range_str}"}}]
     
     sections = []
     if audit_report["on_time"]:
@@ -136,25 +130,22 @@ def main():
     
     if audit_report["missed"]:
         names = ", ".join([f"<@{u}>" for u in audit_report["missed"]])
-        sections.append(f"🚨 *Missed Deadline:* {names} (10€ fine added)")
+        sections.append(f"🚨 *Missed Deadline:* {names}")
         
     if audit_report["late_approved"]:
         late_names = ", ".join([f"<@{u}> ({w})" for u, w in audit_report["late_approved"]])
-        sections.append(f"🕰️ *Late Updates Approved:* {late_names} (Fines removed!)")
+        sections.append(f"🕰️ *Late Updates Approved:* {late_names}")
 
     if not sections:
         sections.append("No activity detected this week.")
         
     report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n\n".join(sections)}})
-        
-    total_pot = sum([u["total_fines"] for u in ledger["users"].values()])
-    report_blocks.append({"type": "divider"})
-    report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"💰 *Current Cleaning Fund Pot: {total_pot}€*"}})
     
+    # Send the message without mentioning fines or the pot
     client.chat_postMessage(
         channel=CHANNEL_ID, 
         blocks=report_blocks,
-        text=f"📊 Weekly Audit Results are in! Pot: {total_pot}€" 
+        text=f"📊 Weekly Audit Results are in for {date_range_str}" 
     )
     
     save_ledger(ledger)
