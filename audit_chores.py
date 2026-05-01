@@ -15,16 +15,36 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 
 # Initialize Gemini with the new SDK
 if GEMINI_API_KEY:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
+    # Explicitly use v1 to avoid the 404 issue with v1beta
+    ai_client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={'api_version': 'v1'}
+    )
     model_id = "gemini-1.5-flash"
 else:
     ai_client = None
 
 def classify_replies_with_ai(thread_text, user_ids, current_week):
     """Uses Gemini Flash to classify who has completed their chores."""
+    
+    def fallback_match():
+        print("💡 Using fallback keyword matching logic...")
+        results = {}
+        for uid in user_ids:
+            user_pattern = rf"<@{uid}>"
+            user_messages = [m for m in thread_text.split("\n") if user_pattern in m]
+            
+            is_done = False
+            for msg in user_messages:
+                text = msg.lower()
+                if any(word in text for word in ["done", "cleaned", "finished", "did it", "completed"]):
+                    is_done = True
+                    break
+            results[uid] = "completed" if is_done else "not_done"
+        return results
+
     if not ai_client:
-        print("⚠️ Gemini API Key missing. Falling back to basic keyword matching.")
-        return {uid: "not_done" for uid in user_ids}
+        return fallback_match()
 
     user_context = ", ".join([f"ID: {uid}" for uid in user_ids])
 
@@ -61,7 +81,7 @@ def classify_replies_with_ai(thread_text, user_ids, current_week):
     except Exception as e:
         print(f"❌ Gemini Error: {e}")
     
-    return {}
+    return fallback_match()
 
 def main():
     ledger = load_ledger()
@@ -86,7 +106,6 @@ def main():
         "missed": []
     }
 
-    # Threads to keep (valid ones)
     valid_threads = []
 
     for thread_info in recent_threads:
@@ -97,7 +116,7 @@ def main():
         try:
             replies_res = client.conversations_replies(channel=CHANNEL_ID, ts=ts)
             messages = replies_res.get("messages", [])
-            valid_threads.append(thread_info) # Keep this thread in history if it's found
+            valid_threads.append(thread_info)
 
             thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
             
@@ -120,7 +139,6 @@ def main():
                     else:
                         if prev_status is not True: 
                             ledger["history"][week]["completions"][user_id] = False
-                            # Don't duplicate missed weeks if already there
                             if week not in ledger["users"][user_id]["missed_weeks"]:
                                 ledger["users"][user_id]["missed_weeks"].append(week)
                                 ledger["users"][user_id]["total_fines"] += 10
@@ -135,15 +153,14 @@ def main():
 
         except SlackApiError as e:
             if e.response["error"] == "thread_not_found":
-                print(f"⚠️ Thread {ts} for week {week} not found. Skipping and removing from history.")
+                print(f"⚠️ Thread {ts} for week {week} not found. Removing from history.")
             else:
                 print(f"❌ Slack API Error auditing thread {ts}: {e}")
-                valid_threads.append(thread_info) # Keep it if it was a temporary error
+                valid_threads.append(thread_info)
         except Exception as e:
             print(f"❌ Error auditing thread {ts}: {e}")
             valid_threads.append(thread_info)
 
-    # Update metadata with only the threads we found (up to 3)
     ledger["metadata"]["recent_threads"] = valid_threads[-3:]
 
     # --- POST AUDIT REPORT ---
@@ -155,7 +172,6 @@ def main():
         sections.append(f"✅ *Completed on time:* {names}")
     
     if audit_report["missed"]:
-        # Only show as "missed" if they aren't also in "on_time" (prevents weirdness if logic overlaps)
         really_missed = [u for u in audit_report["missed"] if u not in audit_report["on_time"]]
         if really_missed:
             names = ", ".join([f"<@{u}>" for u in really_missed])
