@@ -19,29 +19,31 @@ if GEMINI_API_KEY:
 else:
     model = None
 
-def classify_replies_with_ai(thread_text, user_ids):
+def classify_replies_with_ai(thread_text, user_ids, current_week):
     """Uses Gemini Flash to classify who has completed their chores."""
     if not model:
         print("⚠️ Gemini API Key missing. Falling back to basic keyword matching.")
         return {uid: "not_done" for uid in user_ids}
 
     prompt = f"""
-    The following is a list of replies in a Slack thread where housemates are supposed to report that they finished their chores.
-    People are assigned chores on Sunday and have until Tuesday to finish.
-    
+    The following is a list of messages from a Slack thread where housemates report completing their weekly chores.
+    The current week being audited is: {current_week}
     Current users to check: {", ".join(user_ids)}
     
     Thread Messages:
     {thread_text}
     
-    For each user ID provided, determine their status. 
+    INSTRUCTIONS:
+    - Determine if each user has completed their chores based on their messages.
+    - Be smart about typos: if someone mentions a date like "2020" but the current week is in 2026, assume they meant the current week.
+    - If a user says "done", "cleaned", "I did the [zone]", or "forgot to text but it's done", mark them as completed.
+    
     Use exactly one of these labels:
-    - "completed_on_time": They clearly stated they finished the chore (e.g. "done", "cleaned", "finished").
-    - "completed_late": They are reporting it's done, but the context implies they missed the original deadline.
+    - "completed": They clearly stated they finished the chore.
     - "not_done": They haven't replied, gave an excuse, or said they will do it later.
     
     Return the result ONLY as a valid JSON object mapping user_id to status.
-    Example: {{"U123": "completed_on_time", "U456": "not_done"}}
+    Example: {{"U123": "completed", "U456": "not_done"}}
     """
     
     try:
@@ -93,14 +95,14 @@ def main():
             if not assigned_users:
                 continue
 
-            classifications = classify_replies_with_ai(thread_text, assigned_users)
+            classifications = classify_replies_with_ai(thread_text, assigned_users, week)
             
             for user_id in assigned_users:
                 status = classifications.get(user_id, "not_done")
                 prev_status = week_history.get("completions", {}).get(user_id)
                 
                 if is_current_week:
-                    if status == "completed_on_time":
+                    if status == "completed":
                         ledger["history"][week]["completions"][user_id] = True
                         audit_report["on_time"].append(user_id)
                     else:
@@ -110,7 +112,7 @@ def main():
                             ledger["users"][user_id]["total_fines"] += 10
                             audit_report["missed"].append(user_id)
                 else:
-                    if prev_status is False and status in ["completed_on_time", "completed_late"]:
+                    if prev_status is False and status == "completed":
                         ledger["history"][week]["completions"][user_id] = True
                         if week in ledger["users"][user_id]["missed_weeks"]:
                             ledger["users"][user_id]["missed_weeks"].remove(week)
