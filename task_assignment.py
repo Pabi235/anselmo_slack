@@ -19,7 +19,6 @@ CHORE_DETAILS = {
     "Downstairs Bathroom": "Scrub shower (floor/walls), wipe sink, toilet disinfectant, take out trash, vacuum/mop floors"
 }
 
-# Main zones ordered by priority (Importance Weights: Kitchen=5, Living Room=4, Hallways=3, Garden=2)
 MAIN_ZONES = ["Kitchen", "Living Room", "Hallways", "Garden"]
 UPSTAIRS_USERS = ["U0AU4DWH2V7", "U0ATA3JK24X", "U0ATA3GRBRD"] # Kika, Josie, Angela
 DOWNSTAIRS_USER = "U0AN4FD067K" # Pab
@@ -52,32 +51,11 @@ def get_away_users(ledger):
         print(f"Calendar check failed: {e}")
     return away_users
 
-def main():
-    ledger = load_ledger()
-    today = datetime.date.today()
-    
-    # Calculate Sunday (start of week) and next Sunday (end of week)
-    # Python's weekday(): Monday=0, Sunday=6
-    days_to_subtract = (today.weekday() + 1) % 7 # If Sunday (6), subtract 0. If Monday (0), subtract 1.
-    start_of_week = today - datetime.timedelta(days=days_to_subtract)
-    end_of_week = start_of_week + datetime.timedelta(days=7)
-    
-    year, week_num = start_of_week.isocalendar()[:2]
-    current_week_str = f"{year}-{week_num:02d}"
-    date_range_str = f"{start_of_week.strftime('%Y-%m-%d')} to {end_of_week.strftime('%Y-%m-%d')}"
-    
-    # Calculate audit deadline (the following Tuesday from creation)
-    # If today is Sunday (6), Tuesday is in 2 days.
-    audit_deadline = today + datetime.timedelta(days=(1 - today.weekday() + 7) % 7 if today.weekday() != 1 else 7)
-    deadline_str = audit_deadline.strftime('%A, %B %d')
-
-    all_users = list(ledger["users"].keys())
-    away_users = get_away_users(ledger)
-    home_users = [u for u in all_users if u not in away_users]
-    
+def calculate_assignments(ledger, home_users):
+    """Core logic shared between the bot and the simulation."""
     assignments = {user: [] for user in home_users}
 
-    # --- 1. MAIN LOOP ASSIGNMENT (Kitchen, Living Room, Hallways, Garden) ---
+    # --- 1. MAIN LOOP ASSIGNMENT ---
     user_to_intended_zone_idx = {}
     zone_idx_to_user = {}
     
@@ -87,7 +65,7 @@ def main():
         user_to_intended_zone_idx[user_id] = next_idx
         zone_idx_to_user[next_idx] = user_id
 
-    # b. Priority Check
+    # Priority Check
     unassigned_main_indices = [i for i in range(len(MAIN_ZONES)) if i not in zone_idx_to_user]
     
     if unassigned_main_indices:
@@ -120,12 +98,35 @@ def main():
                 ledger["metadata"]["upstairs_bathroom_pointer"] = (pointer + i + 1) % len(UPSTAIRS_USERS)
                 assigned_upstairs = True
                 break
-        if not assigned_upstairs:
-            print("No one home for Upstairs Bathroom duty.")
-
+    
     # --- 3. DOWNSTAIRS BATHROOM ---
     if DOWNSTAIRS_USER in home_users:
         assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
+
+    return assignments
+
+def main():
+    ledger = load_ledger()
+    today = datetime.date.today()
+    
+    # Sunday to Sunday logic
+    days_to_subtract = (today.weekday() + 1) % 7
+    start_of_week = today - datetime.timedelta(days=days_to_subtract)
+    end_of_week = start_of_week + datetime.timedelta(days=7)
+    
+    year, week_num = start_of_week.isocalendar()[:2]
+    current_week_str = f"{year}-{week_num:02d}"
+    date_range_str = f"{start_of_week.strftime('%Y-%m-%d')} to {end_of_week.strftime('%Y-%m-%d')}"
+    
+    audit_deadline = today + datetime.timedelta(days=(1 - today.weekday() + 7) % 7 if today.weekday() != 1 else 7)
+    deadline_str = audit_deadline.strftime('%A, %B %d')
+
+    all_users = list(ledger["users"].keys())
+    away_users = get_away_users(ledger)
+    home_users = [u for u in all_users if u not in away_users]
+    
+    # CALL CORE LOGIC
+    assignments = calculate_assignments(ledger, home_users)
 
     # --- 4. FORMAT SLACK MESSAGE ---
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"🧹 Chore Rotation: Week {year} {date_range_str}"}}]
