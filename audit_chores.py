@@ -15,11 +15,8 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 
 # Initialize Gemini with the new SDK
 if GEMINI_API_KEY:
-    # Explicitly use v1 to avoid the 404 issue with v1beta
-    ai_client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options={'api_version': 'v1'}
-    )
+    # Remove version override to let SDK use its best default
+    ai_client = genai.Client(api_key=GEMINI_API_KEY)
     model_id = "gemini-1.5-flash"
 else:
     ai_client = None
@@ -80,6 +77,13 @@ def classify_replies_with_ai(thread_text, user_ids, current_week):
             return json.loads(json_match.group(0))
     except Exception as e:
         print(f"❌ Gemini Error: {e}")
+        if "404" in str(e):
+            print("🔍 Debug: Listing available models for this API key:")
+            try:
+                for m in ai_client.models.list():
+                    print(f"  - {m.name}")
+            except:
+                print("  (Could not list models)")
     
     return fallback_match()
 
