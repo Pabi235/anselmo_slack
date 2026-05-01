@@ -15,9 +15,9 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 
 # Initialize Gemini with the new SDK
 if GEMINI_API_KEY:
-    # Remove version override to let SDK use its best default
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-1.5-flash"
+    # Using the 2.5 Pro model as requested and available in your list
+    model_id = "gemini-2.5-pro"
 else:
     ai_client = None
 
