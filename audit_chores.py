@@ -2,8 +2,9 @@ import os
 import json
 import re
 import datetime
-import google.generativeai as genai
+from google import genai
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from drive_storage import load_ledger, save_ledger
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
@@ -12,42 +13,48 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
-# Initialize Gemini
+# Initialize Gemini with the new SDK
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    ai_client = genai.Client(api_key=GEMINI_API_KEY)
+    model_id = "gemini-1.5-flash"
 else:
-    model = None
+    ai_client = None
 
 def classify_replies_with_ai(thread_text, user_ids, current_week):
     """Uses Gemini Flash to classify who has completed their chores."""
-    if not model:
+    if not ai_client:
         print("⚠️ Gemini API Key missing. Falling back to basic keyword matching.")
         return {uid: "not_done" for uid in user_ids}
 
+    user_context = ", ".join([f"ID: {uid}" for uid in user_ids])
+
     prompt = f"""
-    The following is a list of messages from a Slack thread where housemates report completing their weekly chores.
-    The current week being audited is: {current_week}
-    Current users to check: {", ".join(user_ids)}
-    
-    Thread Messages:
+    You are an assistant auditing house chores. 
+    Below are messages from a Slack thread for the week: {current_week}.
+
+    Users to audit: {user_context}
+
+    Messages:
     {thread_text}
-    
+
     INSTRUCTIONS:
-    - Determine if each user has completed their chores based on their messages.
-    - Be smart about typos: if someone mentions a date like "2020" but the current week is in 2026, assume they meant the current week.
-    - If a user says "done", "cleaned", "I did the [zone]", or "forgot to text but it's done", mark them as completed.
-    
-    Use exactly one of these labels:
-    - "completed": They clearly stated they finished the chore.
-    - "not_done": They haven't replied, gave an excuse, or said they will do it later.
-    
-    Return the result ONLY as a valid JSON object mapping user_id to status.
-    Example: {{"U123": "completed", "U456": "not_done"}}
+    1. For each User ID, determine if they completed their chore.
+    2. Look for messages from that user or messages mentioning that user.
+    3. Accept "done", "finished", "I did the [zone]", "cleaned", and even "forgot to text but I did it".
+    4. Ignore year typos (e.g., if they say 2020 but it is 2026).
+    5. Return a JSON object where the keys are the EXACT User IDs (e.g., "U0AN4FD067K") and the values are either "completed" or "not_done".
+
+    Output ONLY the JSON.
     """
-    
+
     try:
-        response = model.generate_content(prompt)
+        print(f"--- Sending to Gemini ---\nUsers: {user_ids}\n---")
+        response = ai_client.models.generate_content(
+            model=model_id,
+            contents=prompt
+        )
+        print(f"--- Gemini Response ---\n{response.text}\n---")
+
         json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_match:
             return json.loads(json_match.group(0))
@@ -65,7 +72,7 @@ def main():
         print("No threads to audit. Skipping.")
         return
 
-    # Calculate date range for the current week header (to match Sunday assignment)
+    # Calculate date range for the current week header
     today = datetime.date.today()
     days_to_subtract = (today.weekday() + 1) % 7 
     start_of_week = today - datetime.timedelta(days=days_to_subtract)
@@ -79,7 +86,10 @@ def main():
         "missed": []
     }
 
-    for thread_info in reversed(recent_threads):
+    # Threads to keep (valid ones)
+    valid_threads = []
+
+    for thread_info in recent_threads:
         ts = thread_info["ts"]
         week = thread_info["week"]
         is_current_week = (week == current_week)
@@ -87,6 +97,8 @@ def main():
         try:
             replies_res = client.conversations_replies(channel=CHANNEL_ID, ts=ts)
             messages = replies_res.get("messages", [])
+            valid_threads.append(thread_info) # Keep this thread in history if it's found
+
             thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
             
             week_history = ledger.get("history", {}).get(week, {})
@@ -108,8 +120,10 @@ def main():
                     else:
                         if prev_status is not True: 
                             ledger["history"][week]["completions"][user_id] = False
-                            ledger["users"][user_id]["missed_weeks"].append(week)
-                            ledger["users"][user_id]["total_fines"] += 10
+                            # Don't duplicate missed weeks if already there
+                            if week not in ledger["users"][user_id]["missed_weeks"]:
+                                ledger["users"][user_id]["missed_weeks"].append(week)
+                                ledger["users"][user_id]["total_fines"] += 10
                             audit_report["missed"].append(user_id)
                 else:
                     if prev_status is False and status == "completed":
@@ -119,8 +133,18 @@ def main():
                             ledger["users"][user_id]["total_fines"] -= 10
                             audit_report["late_approved"].append((user_id, week))
 
+        except SlackApiError as e:
+            if e.response["error"] == "thread_not_found":
+                print(f"⚠️ Thread {ts} for week {week} not found. Skipping and removing from history.")
+            else:
+                print(f"❌ Slack API Error auditing thread {ts}: {e}")
+                valid_threads.append(thread_info) # Keep it if it was a temporary error
         except Exception as e:
-            print(f"Error auditing thread {ts}: {e}")
+            print(f"❌ Error auditing thread {ts}: {e}")
+            valid_threads.append(thread_info)
+
+    # Update metadata with only the threads we found (up to 3)
+    ledger["metadata"]["recent_threads"] = valid_threads[-3:]
 
     # --- POST AUDIT REPORT ---
     report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: Week {year} {date_range_str}"}}]
@@ -131,8 +155,11 @@ def main():
         sections.append(f"✅ *Completed on time:* {names}")
     
     if audit_report["missed"]:
-        names = ", ".join([f"<@{u}>" for u in audit_report["missed"]])
-        sections.append(f"🚨 *Missed Deadline:* {names}")
+        # Only show as "missed" if they aren't also in "on_time" (prevents weirdness if logic overlaps)
+        really_missed = [u for u in audit_report["missed"] if u not in audit_report["on_time"]]
+        if really_missed:
+            names = ", ".join([f"<@{u}>" for u in really_missed])
+            sections.append(f"🚨 *Missed Deadline:* {names}")
         
     if audit_report["late_approved"]:
         late_names = ", ".join([f"<@{u}> ({w})" for u, w in audit_report["late_approved"]])
@@ -143,7 +170,6 @@ def main():
         
     report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n\n".join(sections)}})
     
-    # Send the message without mentioning fines or the pot
     client.chat_postMessage(
         channel=CHANNEL_ID, 
         blocks=report_blocks,
