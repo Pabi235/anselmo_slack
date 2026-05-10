@@ -5,13 +5,15 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = [
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/calendar.events'
+]
 
-def get_drive_service():
-    """Authenticates using the Service Account JSON stored in GitHub Secrets."""
+def get_creds():
+    """Fetches and parses the Service Account JSON from environment."""
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
     if not creds_json:
-        # Check if the key exists but is empty
         if "GCP_SERVICE_ACCOUNT_JSON" in os.environ:
             raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable exists but is EMPTY.")
         else:
@@ -19,10 +21,19 @@ def get_drive_service():
     
     try:
         creds_dict = json.loads(creds_json)
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        return build('drive', 'v3', credentials=creds)
+        return service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     except json.JSONDecodeError as e:
         raise ValueError(f"GCP_SERVICE_ACCOUNT_JSON is not a valid JSON string. Error: {e}")
+
+def get_drive_service():
+    """Authenticates using the Service Account JSON stored in GitHub Secrets."""
+    creds = get_creds()
+    return build('drive', 'v3', credentials=creds)
+
+def get_calendar_service():
+    """Authenticates for Google Calendar API."""
+    creds = get_creds()
+    return build('calendar', 'v3', credentials=creds)
 
 def get_file_id(service):
     """Finds the ledger.json file specifically inside your shared folder."""
