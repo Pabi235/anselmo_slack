@@ -180,8 +180,8 @@ def calculate_assignments(ledger, home_users):
                 break
     
     # 3. DOWNSTAIRS
-    if DOWNSTAIR_USER in home_users:
-        assignments[DOWNSTAIR_USER].append("Downstairs Bathroom")
+    if DOWNSTAIRS_USER in home_users:
+        assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
 
     return assignments
 
