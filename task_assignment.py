@@ -147,26 +147,46 @@ def get_away_status(ledger):
     try:
         print("📅 [Status] Checking Google Calendar for active absences...")
         cal_service = get_calendar_service()
-        now = datetime.datetime.utcnow().isoformat() + 'Z'
+        
+        # Define the window: from now until the end of this chore week
+        now = datetime.datetime.utcnow()
+        now_iso = now.isoformat() + 'Z'
+        one_week_later = (now + datetime.timedelta(days=7)).isoformat() + 'Z'
         
         events_result = cal_service.events().list(
-            calendarId=calendar_id, timeMin=now,
-            maxResults=15, singleEvents=True,
+            calendarId=calendar_id, 
+            timeMin=now_iso,
+            timeMax=one_week_later,
+            singleEvents=True,
             orderBy='startTime'
         ).execute()
         events = events_result.get('items', [])
+
+        today = datetime.date.today()
 
         for event in events:
             summary = event.get('summary', '').lower()
             if not any(word in summary for word in ['away', 'holiday', 'out', 'vacation']):
                 continue
                 
+            # Get event start/end to check for "active now"
+            start_raw = event['start'].get('date') or event['start'].get('dateTime')
+            end_raw = event['end'].get('date') or event['end'].get('dateTime')
+            
+            # Parse to date objects
+            start_date = datetime.datetime.fromisoformat(start_raw.split('T')[0]).date()
+            end_date = datetime.datetime.fromisoformat(end_raw.split('T')[0]).date()
+
+            # Only process if event is happening TODAY
+            if not (start_date <= today < end_date):
+                continue
+
             is_sublet = "sublet" in summary or "guest" in summary
             
             for user_id, user_data in ledger["users"].items():
                 if user_data["name"].lower() in summary:
                     status_type = "SUBLET" if is_sublet else "AWAY (Skip)"
-                    print(f"🚩 [Status] {user_data['name']} is marked as {status_type}")
+                    print(f"🚩 [Status] {user_data['name']} is active {status_type} ({start_date} to {end_date})")
                     if is_sublet:
                         away_sublet.append(user_id)
                     else:
@@ -254,7 +274,7 @@ def main():
     audit_deadline = today + datetime.timedelta(days=(1 - today.weekday() + 7) % 7 if today.weekday() != 1 else 7)
     deadline_str = audit_deadline.strftime('%A, %B %d')
 
-    # 1. Determine who is home
+    # 1. Determine who is home (Using real-time API check now)
     all_users = list(ledger["users"].keys())
     away_skip, away_sublet = get_away_status(ledger)
     
@@ -289,7 +309,6 @@ def main():
     print("📤 Posting rotation to Slack...")
     response = client.chat_postMessage(channel=CHANNEL_ID, blocks=blocks, text=f"🧹 Chore Rotation: Week {year} {date_range_str}")
     
-    # Metadata updates
     recent_threads = ledger["metadata"].get("recent_threads", [])
     recent_threads.append({"ts": response["ts"], "week": current_week_str})
     ledger["metadata"]["recent_threads"] = recent_threads[-3:]
