@@ -38,7 +38,6 @@ else:
 def get_calendar_id():
     """Extracts the calendar ID from the private ICAL URL."""
     if not CALENDAR_URL: return None
-    # Typical format: https://calendar.google.com/calendar/ical/[ID]/private-[SECRET]/basic.ics
     match = re.search(r'/ical/([^/]+)/private', CALENDAR_URL)
     if match:
         return match.group(1).replace('%40', '@')
@@ -46,26 +45,30 @@ def get_calendar_id():
 
 def discover_absences_with_ai(ledger):
     """Scans Slack history for absence mentions and updates Google Calendar."""
-    if not ai_client: return
+    if not ai_client:
+        print("⏭️ AI client not initialized (missing API key). Skipping discovery.")
+        return
     
     calendar_id = get_calendar_id()
     if not calendar_id:
         print("⚠️ Could not determine Calendar ID. Skipping AI discovery.")
         return
 
-    # 1. Fetch last 7 days of messages
+    print("🔍 [Discovery] Fetching Slack history for the last 7 days...")
     one_week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).timestamp()
     try:
         res = client.conversations_history(channel=CHANNEL_ID, oldest=one_week_ago)
         messages = res.get("messages", [])
-        if not messages: return
+        if not messages:
+            print("⏭️ No messages found in the last 7 days.")
+            return
         
         thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
+        print(f"✅ [Discovery] Analyzing {len(messages)} messages with Gemini...")
     except Exception as e:
         print(f"❌ Error fetching Slack history: {e}")
         return
 
-    # 2. Ask Gemini to parse
     user_context = ", ".join([f"{u['name']} (ID: {uid})" for uid, u in ledger["users"].items()])
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
@@ -93,19 +96,21 @@ def discover_absences_with_ai(ledger):
     try:
         response = ai_client.models.generate_content(model=model_id, contents=prompt)
         json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
-        if not json_match: return
+        if not json_match:
+            print("⏭️ Gemini found no new absences.")
+            return
         
         new_absences = json.loads(json_match.group(0))
-        if not new_absences: return
+        if not new_absences:
+            print("⏭️ Gemini confirmed no new absences.")
+            return
 
-        # 3. Write to Google Calendar
+        print(f"🤖 [Gemini] Identified {len(new_absences)} upcoming absence(s).")
         cal_service = get_calendar_service()
         for abs_info in new_absences:
             name = abs_info['name']
             event_title = f"Away: {name}" + (" (Sublet)" if abs_info['sublet'] else "")
             
-            # Check if event already exists to avoid duplicates
-            # (Simple check: search for title in that date range)
             time_min = f"{abs_info['start']}T00:00:00Z"
             time_max = f"{abs_info['end']}T23:59:59Z"
             
@@ -115,7 +120,7 @@ def discover_absences_with_ai(ledger):
             ).execute()
             
             if not existing.get('items'):
-                print(f"📅 Creating Calendar event for {name} ({abs_info['start']} to {abs_info['end']})")
+                print(f"📅 [Calendar] Creating event: '{event_title}' ({abs_info['start']} to {abs_info['end']})")
                 event_body = {
                     'summary': event_title,
                     'start': {'date': abs_info['start']},
@@ -123,46 +128,58 @@ def discover_absences_with_ai(ledger):
                     'description': f"Automatically added by ChoreBot based on Slack message."
                 }
                 cal_service.events().insert(calendarId=calendar_id, body=event_body).execute()
+            else:
+                print(f"⏭️ [Calendar] Event for '{name}' already exists in this period.")
                 
     except Exception as e:
         print(f"❌ AI Absence Discovery failed: {e}")
 
 def get_away_status(ledger):
-    """Checks the .ics and returns who is away and who is subletting."""
+    """Checks the Google Calendar API for current away/sublet status."""
     away_skip = []
     away_sublet = []
     
-    if not CALENDAR_URL: return away_skip, away_sublet
-    
+    calendar_id = get_calendar_id()
+    if not calendar_id:
+        print("⚠️ No Calendar ID found for status check.")
+        return away_skip, away_sublet
+
     try:
-        cal_data = requests.get(CALENDAR_URL).text
-        cal = Calendar.from_ical(cal_data)
-        today = datetime.date.today()
+        print("📅 [Status] Checking Google Calendar for active absences...")
+        cal_service = get_calendar_service()
+        now = datetime.datetime.utcnow().isoformat() + 'Z'
         
-        for component in cal.walk('vevent'):
-            start = component.get('dtstart').dt
-            end = component.get('dtend').dt
-            if isinstance(start, datetime.datetime): start = start.date()
-            if isinstance(end, datetime.datetime): end = end.date()
-            
-            # Event is active today
-            if start <= today < end: # End date is usually exclusive
-                summary = str(component.get('summary')).lower()
-                is_sublet = "sublet" in summary or "guest" in summary
+        events_result = cal_service.events().list(
+            calendarId=calendar_id, timeMin=now,
+            maxResults=15, singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
+
+        for event in events:
+            summary = event.get('summary', '').lower()
+            if not any(word in summary for word in ['away', 'holiday', 'out', 'vacation']):
+                continue
                 
-                for user_id, user_data in ledger["users"].items():
-                    if user_data["name"].lower() in summary:
-                        if is_sublet:
-                            away_sublet.append(user_id)
-                        else:
-                            away_skip.append(user_id)
+            is_sublet = "sublet" in summary or "guest" in summary
+            
+            for user_id, user_data in ledger["users"].items():
+                if user_data["name"].lower() in summary:
+                    status_type = "SUBLET" if is_sublet else "AWAY (Skip)"
+                    print(f"🚩 [Status] {user_data['name']} is marked as {status_type}")
+                    if is_sublet:
+                        away_sublet.append(user_id)
+                    else:
+                        away_skip.append(user_id)
+                        
     except Exception as e:
-        print(f"Calendar check failed: {e}")
+        print(f"❌ Calendar API check failed: {e}")
         
     return list(set(away_skip)), list(set(away_sublet))
 
 def calculate_assignments(ledger, home_users):
     """Core logic shared between the bot and the simulation."""
+    print(f"🧮 [Logic] Calculating chores for {len(home_users)} home users...")
     assignments = {user: [] for user in home_users}
 
     # --- 1. MAIN LOOP ASSIGNMENT ---
@@ -178,6 +195,7 @@ def calculate_assignments(ledger, home_users):
     unassigned_main_indices = [i for i in range(len(MAIN_ZONES)) if i not in zone_idx_to_user]
     
     if unassigned_main_indices:
+        print(f"⚖️ [Logic] {len(unassigned_main_indices)} high-priority zones are unassigned. Balancing...")
         unassigned_main_indices.sort()
         assigned_main_indices = sorted(zone_idx_to_user.keys(), reverse=True)
         for unassigned_idx in unassigned_main_indices:
@@ -185,6 +203,7 @@ def calculate_assignments(ledger, home_users):
             lowest_priority_assigned_idx = assigned_main_indices[0]
             if unassigned_idx < lowest_priority_assigned_idx:
                 user_id = zone_idx_to_user[lowest_priority_assigned_idx]
+                print(f"🔄 [Logic] Swapping {MAIN_ZONES[unassigned_idx]} onto {ledger['users'][user_id]['name']} (Priority Swap)")
                 user_to_intended_zone_idx[user_id] = unassigned_idx
                 del zone_idx_to_user[lowest_priority_assigned_idx]
                 zone_idx_to_user[unassigned_idx] = user_id
@@ -202,6 +221,7 @@ def calculate_assignments(ledger, home_users):
         for i in range(len(UPSTAIRS_USERS)):
             current_target = UPSTAIRS_USERS[(pointer + i) % len(UPSTAIRS_USERS)]
             if current_target in home_users:
+                print(f"🚿 [Logic] Upstairs Bathroom -> {ledger['users'][current_target]['name']}")
                 assignments[current_target].append("Upstairs Bathroom")
                 ledger["metadata"]["upstairs_bathroom_pointer"] = (pointer + i + 1) % len(UPSTAIRS_USERS)
                 assigned_upstairs = True
@@ -209,12 +229,15 @@ def calculate_assignments(ledger, home_users):
     
     # --- 3. DOWNSTAIRS BATHROOM ---
     if DOWNSTAIRS_USER in home_users:
+        print(f"🚽 [Logic] Downstairs Bathroom -> {ledger['users'][DOWNSTAIRS_USER]['name']}")
         assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
 
     return assignments
 
 def main():
+    print(f"\n🚀 --- Chore Assignment Job: {datetime.datetime.now()} ---")
     ledger = load_ledger()
+    print("📖 Ledger loaded from Google Drive.")
     
     # 0. AI Absence Discovery
     discover_absences_with_ai(ledger)
@@ -235,8 +258,8 @@ def main():
     all_users = list(ledger["users"].keys())
     away_skip, away_sublet = get_away_status(ledger)
     
-    # Home users = everyone not skipping
     home_users = [u for u in all_users if u not in away_skip]
+    print(f"🏠 Home Users: {', '.join([ledger['users'][u]['name'] for u in home_users])}")
     
     # CALL CORE LOGIC
     assignments = calculate_assignments(ledger, home_users)
@@ -251,7 +274,7 @@ def main():
     if away_sublet:
         for u in away_sublet:
             name = ledger["users"][u]["name"]
-            blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"🏠 *{name} is away but subletting.* {name}, please coordinate with your guest!"}]})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"🏠 *{name} is away but subletting.* {name}, please coordinate with your guest!"}})
     
     for user_id, tasks in assignments.items():
         task_list = []
@@ -263,9 +286,10 @@ def main():
         
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✨ *Friendly reminder: Please ensure your cleaning is done by {deadline_str}!*"}]})
 
-    # --- 5. SEND MESSAGE & UPDATE LEDGER ---
+    print("📤 Posting rotation to Slack...")
     response = client.chat_postMessage(channel=CHANNEL_ID, blocks=blocks, text=f"🧹 Chore Rotation: Week {year} {date_range_str}")
     
+    # Metadata updates
     recent_threads = ledger["metadata"].get("recent_threads", [])
     recent_threads.append({"ts": response["ts"], "week": current_week_str})
     ledger["metadata"]["recent_threads"] = recent_threads[-3:]
@@ -281,6 +305,7 @@ def main():
     }
     
     save_ledger(ledger)
+    print("💾 Ledger updated on Google Drive. Job complete!\n")
 
 if __name__ == "__main__":
     main()
