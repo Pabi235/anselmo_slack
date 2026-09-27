@@ -12,7 +12,13 @@ USER_NAMES = {
 def run_simulation(weeks=52):
     ledger = {
         "metadata": {},
-        "users": {uid: {"name": name} for uid, name in USER_NAMES.items()}
+        "users": {
+            uid: {
+                "name": name,
+                "bathroom_type": "downstairs" if name == "Pab" else "upstairs"
+            }
+            for uid, name in USER_NAMES.items()
+        }
     }
 
     stats = {uid: Counter() for uid in USER_NAMES.keys()}
@@ -72,7 +78,8 @@ def run_simulation(weeks=52):
     print(f"  • Total Collisions: {collisions} (Target: 0)")
     print(f"  • Total Back-to-Back Repeats: {back_to_backs} (Target: 0)")
     
-    upstairs_counts = [stats[u]["Upstairs Bathroom"] for u in task_assignment.UPSTAIRS_USERS]
+    upstairs_uids = [u for u in USER_NAMES.keys() if ledger["users"][u].get("bathroom_type") == "upstairs"]
+    upstairs_counts = [stats[u]["Upstairs Bathroom"] for u in upstairs_uids]
     upstairs_spread = max(upstairs_counts) - min(upstairs_counts)
     print(f"  • Upstairs Bathroom Spread: {upstairs_spread} (Max difference: {upstairs_spread} times between Angela, Josie, and Kika)")
     

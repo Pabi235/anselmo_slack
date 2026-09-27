@@ -24,8 +24,6 @@ CHORE_DETAILS = {
 }
 
 MAIN_ZONES = ["Kitchen", "Living Room", "Hallways", "Garden"]
-UPSTAIRS_USERS = ["U0AU4DWH2V7", "U0ATA3JK24X", "U0ATA3GRBRD"] # Kika, Josie, Angela
-DOWNSTAIRS_USER = "U0AN4FD067K" # Pab
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
@@ -159,6 +157,10 @@ def ensure_user_state(ledger):
                     if task in MAIN_ZONES:
                         udata["recent_zones"].append(task)
                         
+        if "bathroom_type" not in udata:
+            # Default fallback: Pab is downstairs, others upstairs
+            udata["bathroom_type"] = "downstairs" if uid == "U0AN4FD067K" else "upstairs"
+
         if "upstairs_bathroom_count" not in udata:
             udata["upstairs_bathroom_count"] = 0
             udata["last_upstairs_bathroom_week"] = None
@@ -215,8 +217,11 @@ def calculate_assignments(ledger, home_users, current_week_str=""):
             u_data["recent_zones"] = recent[-4:]
             u_data["last_main_index"] = MAIN_ZONES.index(z)
 
-    # 2. UPSTAIRS BATHROOM (Fair Long-Term Proportion)
-    upstairs_candidates = [u for u in UPSTAIRS_USERS if u in home_users]
+    # 2. UPSTAIRS BATHROOM (Fair Long-Term Proportion via bathroom_type)
+    upstairs_candidates = [
+        u for u in home_users 
+        if ledger["users"][u].get("bathroom_type") == "upstairs"
+    ]
     if upstairs_candidates:
         def bathroom_sort_key(u):
             u_data = ledger["users"][u]
@@ -228,11 +233,25 @@ def calculate_assignments(ledger, home_users, current_week_str=""):
         u_data = ledger["users"][chosen_upstairs]
         u_data["upstairs_bathroom_count"] = u_data.get("upstairs_bathroom_count", 0) + 1
         u_data["last_upstairs_bathroom_week"] = current_week_str
-        ledger["metadata"]["upstairs_bathroom_pointer"] = (UPSTAIRS_USERS.index(chosen_upstairs) + 1) % len(UPSTAIRS_USERS)
 
-    # 3. DOWNSTAIRS BATHROOM (Pab)
-    if DOWNSTAIRS_USER in home_users:
-        assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
+    # 3. DOWNSTAIRS BATHROOM (via bathroom_type)
+    downstairs_candidates = [
+        u for u in home_users 
+        if ledger["users"][u].get("bathroom_type") == "downstairs"
+    ]
+    if len(downstairs_candidates) == 1:
+        assignments[downstairs_candidates[0]].append("Downstairs Bathroom")
+    elif len(downstairs_candidates) > 1:
+        def ds_sort_key(u):
+            u_data = ledger["users"][u]
+            return (u_data.get("downstairs_bathroom_count", 0), u_data.get("last_downstairs_bathroom_week") or "")
+
+        chosen_downstairs = min(downstairs_candidates, key=ds_sort_key)
+        assignments[chosen_downstairs].append("Downstairs Bathroom")
+
+        u_data = ledger["users"][chosen_downstairs]
+        u_data["downstairs_bathroom_count"] = u_data.get("downstairs_bathroom_count", 0) + 1
+        u_data["last_downstairs_bathroom_week"] = current_week_str
 
     return assignments
 
