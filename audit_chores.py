@@ -107,7 +107,8 @@ def main():
     audit_report = {
         "on_time": [],
         "late_approved": [],
-        "missed": []
+        "missed": [],
+        "in_progress_done": []
     }
 
     valid_threads = []
@@ -115,7 +116,28 @@ def main():
     for thread_info in recent_threads:
         ts = thread_info["ts"]
         week = thread_info["week"]
-        is_current_week = (week == current_week)
+        week_history = ledger.get("history", {}).get(week, {})
+        assigned_users = list(week_history.get("assignments", {}).keys())
+        
+        if not assigned_users:
+            continue
+            
+        # Determine deadline for this thread
+        thread_deadline_str = thread_info.get("deadline") or week_history.get("deadline")
+        if thread_deadline_str:
+            try:
+                deadline_date = datetime.date.fromisoformat(thread_deadline_str)
+            except ValueError:
+                deadline_date = today
+        else:
+            try:
+                y, w = map(int, week.split("-"))
+                deadline_date = datetime.date.fromisocalendar(y, w, 1) + datetime.timedelta(days=8)
+            except Exception:
+                deadline_date = today
+
+        deadline_passed = (today >= deadline_date)
+        already_audited = week_history.get("audited", False)
         
         try:
             replies_res = client.conversations_replies(channel=CHANNEL_ID, ts=ts)
@@ -123,37 +145,40 @@ def main():
             valid_threads.append(thread_info)
 
             thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
-            
-            week_history = ledger.get("history", {}).get(week, {})
-            assigned_users = list(week_history.get("assignments", {}).keys())
-            
-            if not assigned_users:
-                continue
-
             classifications = classify_replies_with_ai(thread_text, assigned_users, week)
             
             for user_id in assigned_users:
                 status = classifications.get(user_id, "not_done")
                 prev_status = week_history.get("completions", {}).get(user_id)
                 
-                if is_current_week:
+                if not deadline_passed:
+                    # Chore week is still in progress: record early completions without penalty
+                    if status == "completed":
+                        ledger["history"][week]["completions"][user_id] = True
+                        audit_report["in_progress_done"].append(user_id)
+                elif not already_audited:
+                    # Official deadline audit
                     if status == "completed":
                         ledger["history"][week]["completions"][user_id] = True
                         audit_report["on_time"].append(user_id)
                     else:
-                        if prev_status is not True: 
+                        if prev_status is not True:
                             ledger["history"][week]["completions"][user_id] = False
                             if week not in ledger["users"][user_id]["missed_weeks"]:
                                 ledger["users"][user_id]["missed_weeks"].append(week)
                                 ledger["users"][user_id]["total_fines"] += 10
                             audit_report["missed"].append(user_id)
                 else:
+                    # Post-deadline check for late updates and fine refund
                     if prev_status is False and status == "completed":
                         ledger["history"][week]["completions"][user_id] = True
                         if week in ledger["users"][user_id]["missed_weeks"]:
                             ledger["users"][user_id]["missed_weeks"].remove(week)
                             ledger["users"][user_id]["total_fines"] -= 10
                             audit_report["late_approved"].append((user_id, week))
+
+            if deadline_passed and not already_audited:
+                ledger["history"][week]["audited"] = True
 
         except SlackApiError as e:
             if e.response["error"] == "thread_not_found":

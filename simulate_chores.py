@@ -1,7 +1,7 @@
+import random
 from collections import Counter
-import task_assignment # Import directly from your production script
+import task_assignment
 
-# User mapping for readable output
 USER_NAMES = {
     "U0AN4FD067K": "Pab",
     "U0ATA3GRBRD": "Angela",
@@ -9,44 +9,54 @@ USER_NAMES = {
     "U0AU4DWH2V7": "Kika"
 }
 
-def run_simulation(weeks=12):
-    # Initial Mock Ledger (matches your starting state)
+def run_simulation(weeks=52):
     ledger = {
-        "metadata": {"upstairs_bathroom_pointer": 0},
-        "users": {
-            "U0AN4FD067K": {"name": "Pab", "last_main_index": 3},
-            "U0ATA3GRBRD": {"name": "Angela", "last_main_index": 0},
-            "U0ATA3JK24X": {"name": "Josie", "last_main_index": 1},
-            "U0AU4DWH2V7": {"name": "Kika", "last_main_index": 2}
-        }
+        "metadata": {},
+        "users": {uid: {"name": name} for uid, name in USER_NAMES.items()}
     }
 
     stats = {uid: Counter() for uid in USER_NAMES.keys()}
+    back_to_backs = 0
+    collisions = 0
+    uids = list(USER_NAMES.keys())
     
     print(f"--- Starting {weeks}-Week Simulation using PRODUCTION logic ---")
     
     for week in range(1, weeks + 1):
-        # Simulate someone being away every 4th week
+        # Simulate different people being away periodically
         away_ids = []
-        if week % 4 == 0:
-            away_ids = [list(USER_NAMES.keys())[week % 4]]
-            print(f"Week {week}: {USER_NAMES[away_ids[0]]} is AWAY.")
+        if week % 3 == 0:
+            away_user = uids[(week // 3) % len(uids)]
+            away_ids = [away_user]
+            if weeks <= 12:
+                print(f"Week {week}: {USER_NAMES[away_ids[0]]} is AWAY.")
         
         home_users = [u for u in USER_NAMES.keys() if u not in away_ids]
         
         # EXECUTE PRODUCTION LOGIC
-        assignments = task_assignment.calculate_assignments(ledger, home_users)
+        assignments = task_assignment.calculate_assignments(ledger, home_users, f"2026-{week:02d}")
         
-        # Log stats
+        # Check collisions in communal zones
+        assigned_communal = []
         for uid, tasks in assignments.items():
-            for task in tasks:
-                stats[uid][task] += 1
+            for t in tasks:
+                stats[uid][t] += 1
+                if t in task_assignment.MAIN_ZONES:
+                    assigned_communal.append(t)
+        if len(assigned_communal) != len(set(assigned_communal)):
+            collisions += 1
+
+        # Check back-to-backs
+        for uid in home_users:
+            recent = ledger["users"][uid].get("recent_zones", [])
+            if len(recent) >= 2 and recent[-1] == recent[-2]:
+                back_to_backs += 1
+                print(f"⚠️ Back-to-back repeat: {USER_NAMES[uid]} did {recent[-1]} twice in a row!")
                 
     # --- REPORTING ---
     print("\n--- Simulation Results (Total Times Assigned) ---")
     all_chores = task_assignment.MAIN_ZONES + ["Upstairs Bathroom", "Downstairs Bathroom"]
     
-    # Header
     header = f"{'User':<10}" + "".join([f"| {chore[:10]:<10}" for chore in all_chores])
     print(header)
     print("-" * len(header))
@@ -58,10 +68,19 @@ def run_simulation(weeks=12):
             row += f"| {count:<10}"
         print(row)
     
-    print("\nFairness Check:")
-    print("- Main Loop chores (Kitchen to Garden) should be balanced.")
-    print("- Downstairs Bathroom: Pab only.")
-    print("- Upstairs Bathroom: Girls only.")
+    print("\nValidation Checks:")
+    print(f"  • Total Collisions: {collisions} (Target: 0)")
+    print(f"  • Total Back-to-Back Repeats: {back_to_backs} (Target: 0)")
+    
+    upstairs_counts = [stats[u]["Upstairs Bathroom"] for u in task_assignment.UPSTAIRS_USERS]
+    upstairs_spread = max(upstairs_counts) - min(upstairs_counts)
+    print(f"  • Upstairs Bathroom Spread: {upstairs_spread} (Max difference: {upstairs_spread} times between Angela, Josie, and Kika)")
+    
+    assert collisions == 0, "Collisions detected!"
+    assert back_to_backs == 0, "Back-to-back repeats detected!"
+    assert upstairs_spread <= 2, f"Upstairs bathroom spread too high: {upstairs_spread}"
+    print("✅ All fairness and rotation constraints successfully passed!")
 
 if __name__ == "__main__":
-    run_simulation(weeks=12)
+    run_simulation(weeks=52)
+

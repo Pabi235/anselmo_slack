@@ -1,10 +1,8 @@
 name: Weekly Chore Rotation
 
 on:
-  schedule:
-    # Runs at 09:00 UTC every Monday
-    - cron: '0 9 * * 1'
-  workflow_dispatch: # Allows you to trigger it manually via a button for testing
+  # Note: Automated weekly assignment is scheduled in monday_assignment.yml (Sundays at 08:00 UTC)
+  workflow_dispatch: # Allows manual trigger via button
 
 jobs:
   run-chores:
@@ -16,7 +14,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -25,4 +23,8 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          ICAL_URL: ${{ secrets.ICAL_URL }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python task_assignment.py

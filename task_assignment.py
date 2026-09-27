@@ -3,6 +3,7 @@ import json
 import datetime
 import requests
 import re
+import itertools
 from icalendar import Calendar
 from slack_sdk import WebClient
 from google import genai
@@ -136,50 +137,100 @@ def get_away_status(ledger, week_start, week_end):
         
     return list(set(away_skip)), list(set(away_sublet))
 
-def calculate_assignments(ledger, home_users):
+def ensure_user_state(ledger):
+    """Initializes or reconstructs historical zone counts and recent zones from history."""
+    history = ledger.get("history", {})
+    sorted_weeks = sorted(history.keys())
+    
+    for uid, udata in ledger.setdefault("users", {}).items():
+        if "zone_counts" not in udata:
+            udata["zone_counts"] = {zone: 0 for zone in MAIN_ZONES}
+            for w in sorted_weeks:
+                w_assign = history[w].get("assignments", {}).get(uid, [])
+                for task in w_assign:
+                    if task in MAIN_ZONES:
+                        udata["zone_counts"][task] += 1
+                        
+        if "recent_zones" not in udata:
+            udata["recent_zones"] = []
+            for w in sorted_weeks[-4:]:
+                w_assign = history[w].get("assignments", {}).get(uid, [])
+                for task in w_assign:
+                    if task in MAIN_ZONES:
+                        udata["recent_zones"].append(task)
+                        
+        if "upstairs_bathroom_count" not in udata:
+            udata["upstairs_bathroom_count"] = 0
+            udata["last_upstairs_bathroom_week"] = None
+            for w in sorted_weeks:
+                w_assign = history[w].get("assignments", {}).get(uid, [])
+                if "Upstairs Bathroom" in w_assign:
+                    udata["upstairs_bathroom_count"] += 1
+                    udata["last_upstairs_bathroom_week"] = w
+
+def calculate_assignments(ledger, home_users, current_week_str=""):
     print(f"🧮 [Logic] Assigning for: {', '.join([ledger['users'][u]['name'] for u in home_users])}")
+    ensure_user_state(ledger)
     assignments = {user: [] for user in home_users}
 
-    # 1. MAIN LOOP
-    user_to_zone_idx = {}
-    zone_idx_to_user = {}
-    for user_id in home_users:
-        last_idx = ledger["users"][user_id].get("last_main_index", -1)
-        next_idx = (last_idx + 1) % len(MAIN_ZONES)
-        user_to_zone_idx[user_id] = next_idx
-        zone_idx_to_user[next_idx] = user_id
+    # 1. MAIN COMMUNAL ZONES (Optimal Permutation Matching)
+    num_users = len(home_users)
+    num_zones = len(MAIN_ZONES)
+    active_zones = MAIN_ZONES[:min(num_users, num_zones)]
+    user_list = list(home_users)[:len(active_zones)]
 
-    # Priority Swap
-    unassigned = [i for i in range(len(MAIN_ZONES)) if i not in zone_idx_to_user]
-    if unassigned:
-        unassigned.sort()
-        assigned_indices = sorted(zone_idx_to_user.keys(), reverse=True)
-        for u_idx in unassigned:
-            if not assigned_indices: break
-            low_prio_idx = assigned_indices[0]
-            if u_idx < low_prio_idx:
-                user_id = zone_idx_to_user[low_prio_idx]
-                user_to_zone_idx[user_id] = u_idx
-                del zone_idx_to_user[low_prio_idx]
-                zone_idx_to_user[u_idx] = user_id
-                assigned_indices.pop(0)
+    best_perm = None
+    best_cost = float('inf')
 
-    for user_id, z_idx in user_to_zone_idx.items():
-        assignments[user_id].append(MAIN_ZONES[z_idx])
-        ledger["users"][user_id]["last_main_index"] = z_idx
+    for perm in itertools.permutations(active_zones):
+        cost = 0
+        for u, z in zip(user_list, perm):
+            u_data = ledger["users"][u]
+            z_counts = u_data.get("zone_counts", {})
+            recent = u_data.get("recent_zones", [])
 
-    # 2. UPSTAIRS
+            # Lifetime balance: strongly prefer zones this user has cleaned fewer times
+            cost += z_counts.get(z, 0) * 10
+
+            # Strict recency penalties (anti-repeat within cycle)
+            if len(recent) >= 1 and recent[-1] == z:
+                # Same zone back-to-back: forbidden if more than 1 person home
+                cost += 100000 if len(user_list) > 1 else 0
+            if len(recent) >= 2 and recent[-2] == z:
+                cost += 1000
+            if len(recent) >= 3 and recent[-3] == z:
+                cost += 50
+
+        if cost < best_cost:
+            best_cost = cost
+            best_perm = perm
+
+    if best_perm:
+        for u, z in zip(user_list, best_perm):
+            assignments[u].append(z)
+            u_data = ledger["users"][u]
+            u_data.setdefault("zone_counts", {zone: 0 for zone in MAIN_ZONES})[z] += 1
+            recent = u_data.setdefault("recent_zones", [])
+            recent.append(z)
+            u_data["recent_zones"] = recent[-4:]
+            u_data["last_main_index"] = MAIN_ZONES.index(z)
+
+    # 2. UPSTAIRS BATHROOM (Fair Long-Term Proportion)
     upstairs_candidates = [u for u in UPSTAIRS_USERS if u in home_users]
     if upstairs_candidates:
-        pointer = ledger["metadata"].get("upstairs_bathroom_pointer", 0)
-        for i in range(len(UPSTAIRS_USERS)):
-            target = UPSTAIRS_USERS[(pointer + i) % len(UPSTAIRS_USERS)]
-            if target in home_users:
-                assignments[target].append("Upstairs Bathroom")
-                ledger["metadata"]["upstairs_bathroom_pointer"] = (pointer + i + 1) % len(UPSTAIRS_USERS)
-                break
-    
-    # 3. DOWNSTAIRS
+        def bathroom_sort_key(u):
+            u_data = ledger["users"][u]
+            return (u_data.get("upstairs_bathroom_count", 0), u_data.get("last_upstairs_bathroom_week") or "")
+
+        chosen_upstairs = min(upstairs_candidates, key=bathroom_sort_key)
+        assignments[chosen_upstairs].append("Upstairs Bathroom")
+
+        u_data = ledger["users"][chosen_upstairs]
+        u_data["upstairs_bathroom_count"] = u_data.get("upstairs_bathroom_count", 0) + 1
+        u_data["last_upstairs_bathroom_week"] = current_week_str
+        ledger["metadata"]["upstairs_bathroom_pointer"] = (UPSTAIRS_USERS.index(chosen_upstairs) + 1) % len(UPSTAIRS_USERS)
+
+    # 3. DOWNSTAIRS BATHROOM (Pab)
     if DOWNSTAIRS_USER in home_users:
         assignments[DOWNSTAIRS_USER].append("Downstairs Bathroom")
 
@@ -199,13 +250,16 @@ def main():
     current_week_str = f"{year}-{week_num:02d}"
     date_range_str = f"{start_of_week.strftime('%Y-%m-%d')} to {end_of_week.strftime('%Y-%m-%d')}"
     
-    deadline = (today + datetime.timedelta(days=(1 - today.weekday() + 7) % 7 if today.weekday() != 1 else 7)).strftime('%A, %B %d')
+    # Deadline: Tuesday following the end of the chore week (allowing the full week + weekend)
+    deadline_date = end_of_week + datetime.timedelta(days=2)
+    deadline = deadline_date.strftime('%A, %B ') + str(deadline_date.day)
+    deadline_iso = deadline_date.strftime('%Y-%m-%d')
 
     # Status check with full week window
     away_skip, away_sublet = get_away_status(ledger, start_of_week, end_of_week)
     home_users = [u for u in ledger["users"].keys() if u not in away_skip]
     
-    assignments = calculate_assignments(ledger, home_users)
+    assignments = calculate_assignments(ledger, home_users, current_week_str)
 
     # Message
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"🧹 Chore Rotation: Week {year} {date_range_str}"}}]
@@ -225,11 +279,17 @@ def main():
     
     response = client.chat_postMessage(channel=CHANNEL_ID, blocks=blocks, text=f"🧹 Chore Rotation: Week {year} {date_range_str}")
     
-    ledger["metadata"]["recent_threads"] = (ledger["metadata"].get("recent_threads", []) + [{"ts": response["ts"], "week": current_week_str}])[-3:]
+    thread_entry = {"ts": response["ts"], "week": current_week_str, "deadline": deadline_iso}
+    ledger["metadata"]["recent_threads"] = (ledger["metadata"].get("recent_threads", []) + [thread_entry])[-3:]
     ledger["metadata"]["current_thread_ts"] = response["ts"]
     ledger["metadata"]["current_week"] = current_week_str
     ledger["metadata"]["assigned_users_this_week"] = home_users
-    ledger.setdefault("history", {})[current_week_str] = {"assignments": assignments, "completions": {u: None for u in home_users}}
+    ledger.setdefault("history", {})[current_week_str] = {
+        "assignments": assignments,
+        "completions": {u: None for u in home_users},
+        "deadline": deadline_iso,
+        "audited": False
+    }
     save_ledger(ledger)
     print("💾 State saved. Done!")
 
