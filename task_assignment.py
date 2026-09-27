@@ -278,6 +278,17 @@ def main():
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✨ *Friendly reminder: Please ensure cleaning is done by {deadline}!*"}]})
     
     response = client.chat_postMessage(channel=CHANNEL_ID, blocks=blocks, text=f"🧹 Chore Rotation: Week {year} {date_range_str}")
+    print(f"📢 [Slack] Message posted to channel {CHANNEL_ID}! ts: {response['ts']}")
+    try:
+        permalink_res = client.chat_getPermalink(channel=CHANNEL_ID, message_ts=response["ts"])
+        if permalink_res.get("permalink"):
+            print(f"🔗 [Slack] Direct message link: {permalink_res['permalink']}")
+    except Exception as e:
+        print(f"ℹ️ (Could not generate permalink: {e})")
+
+    print("📋 [Assignments]:")
+    for u, tasks in assignments.items():
+        print(f"  • {ledger['users'][u]['name']}: {', '.join(tasks)}")
     
     thread_entry = {"ts": response["ts"], "week": current_week_str, "deadline": deadline_iso}
     ledger["metadata"]["recent_threads"] = (ledger["metadata"].get("recent_threads", []) + [thread_entry])[-3:]
