@@ -166,15 +166,13 @@ def main():
                             ledger["history"][week]["completions"][user_id] = False
                             if week not in ledger["users"][user_id]["missed_weeks"]:
                                 ledger["users"][user_id]["missed_weeks"].append(week)
-                                ledger["users"][user_id]["total_fines"] += 10
                             audit_report["missed"].append(user_id)
                 else:
-                    # Post-deadline check for late updates and fine refund
+                    # Post-deadline check for late completions
                     if prev_status is False and status == "completed":
                         ledger["history"][week]["completions"][user_id] = True
                         if week in ledger["users"][user_id]["missed_weeks"]:
                             ledger["users"][user_id]["missed_weeks"].remove(week)
-                            ledger["users"][user_id]["total_fines"] -= 10
                             audit_report["late_approved"].append((user_id, week))
 
             if deadline_passed and not already_audited:
@@ -193,7 +191,7 @@ def main():
     ledger["metadata"]["recent_threads"] = valid_threads[-3:]
 
     # --- POST AUDIT REPORT ---
-    report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 End of Week Audit: Week {year} {date_range_str}"}}]
+    report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 Weekly Chore Audit: Week {year} {date_range_str}"}}]
     
     sections = []
     if audit_report["on_time"]:
@@ -204,22 +202,29 @@ def main():
         really_missed = [u for u in audit_report["missed"] if u not in audit_report["on_time"]]
         if really_missed:
             names = ", ".join([f"<@{u}>" for u in really_missed])
-            sections.append(f"🚨 *Missed Deadline:* {names}")
+            sections.append(f"⚠️ *Missed / Unreported:* {names}")
         
     if audit_report["late_approved"]:
         late_names = ", ".join([f"<@{u}> ({w})" for u, w in audit_report["late_approved"]])
-        sections.append(f"🕰️ *Late Updates Approved:* {late_names}")
+        sections.append(f"🕰️ *Late Updates Recorded:* {late_names}")
 
     if not sections:
-        sections.append("No activity detected this week.")
+        sections.append("No audit actions required this week.")
         
     report_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n\n".join(sections)}})
     
-    client.chat_postMessage(
+    response = client.chat_postMessage(
         channel=CHANNEL_ID, 
         blocks=report_blocks,
         text=f"📊 Weekly Audit Results are in for {date_range_str}" 
     )
+    print(f"📢 [Slack] Audit report posted to channel {CHANNEL_ID}! ts: {response['ts']}")
+    try:
+        permalink_res = client.chat_getPermalink(channel=CHANNEL_ID, message_ts=response["ts"])
+        if permalink_res.get("permalink"):
+            print(f"🔗 [Slack] Direct message link: {permalink_res['permalink']}")
+    except Exception as e:
+        print(f"ℹ️ (Could not generate permalink: {e})")
     
     save_ledger(ledger)
 
