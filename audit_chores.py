@@ -21,15 +21,19 @@ if GEMINI_API_KEY:
 else:
     ai_client = None
 
-def classify_replies_with_ai(thread_text, user_ids, current_week):
-    """Uses Gemini Flash to classify who has completed their chores."""
+def classify_replies_with_ai(thread_text, user_ids, current_week, ledger=None):
+    """Uses Gemini to classify who has completed their chores, recognizing Slack tags and names."""
     
     def fallback_match():
         print("💡 Using fallback keyword matching logic...")
         results = {}
         for uid in user_ids:
+            name = ledger.get("users", {}).get(uid, {}).get("name", "").lower() if ledger else ""
             user_pattern = rf"<@{uid}>"
-            user_messages = [m for m in thread_text.split("\n") if user_pattern in m]
+            user_messages = [
+                m for m in thread_text.split("\n") 
+                if user_pattern in m or (name and name in m.lower())
+            ]
             
             is_done = False
             for msg in user_messages:
@@ -43,7 +47,10 @@ def classify_replies_with_ai(thread_text, user_ids, current_week):
     if not ai_client:
         return fallback_match()
 
-    user_context = ", ".join([f"ID: {uid}" for uid in user_ids])
+    if ledger and "users" in ledger:
+        user_context = ", ".join([f"{ledger['users'].get(uid, {}).get('name', uid)} (ID: {uid})" for uid in user_ids])
+    else:
+        user_context = ", ".join([f"ID: {uid}" for uid in user_ids])
 
     prompt = f"""
     You are an assistant auditing house chores. 
@@ -56,10 +63,10 @@ def classify_replies_with_ai(thread_text, user_ids, current_week):
 
     INSTRUCTIONS:
     1. For each User ID, determine if they completed their chore.
-    2. Look for messages from that user or messages mentioning that user.
+    2. Look for messages from that user, or messages from other housemates mentioning that user by ID or by name (e.g. "Daria cleaned the kitchen" or "Daria did it").
     3. Accept "done", "finished", "I did the [zone]", "cleaned", and even "forgot to text but I did it".
     4. Ignore year typos (e.g., if they say 2020 but it is 2026).
-    5. Return a JSON object where the keys are the EXACT User IDs (e.g., "U0AN4FD067K") and the values are either "completed" or "not_done".
+    5. Return a JSON object where the keys are the EXACT User IDs (e.g., "U0AN4FD067K", "daria") and the values are either "completed" or "not_done".
 
     Output ONLY the JSON.
     """
@@ -145,7 +152,7 @@ def main():
             valid_threads.append(thread_info)
 
             thread_text = "\n".join([f"<@{m.get('user')}>: {m.get('text')}" for m in messages])
-            classifications = classify_replies_with_ai(thread_text, assigned_users, week)
+            classifications = classify_replies_with_ai(thread_text, assigned_users, week, ledger)
             
             for user_id in assigned_users:
                 status = classifications.get(user_id, "not_done")
@@ -190,22 +197,28 @@ def main():
 
     ledger["metadata"]["recent_threads"] = valid_threads[-3:]
 
+    def format_user_mention(u):
+        u_data = ledger.get("users", {}).get(u, {})
+        if str(u).startswith("U") and len(str(u)) >= 9 and u_data.get("is_slack_member", True):
+            return f"<@{u}>"
+        return f"*{u_data.get('name', u)}*"
+
     # --- POST AUDIT REPORT ---
     report_blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"📊 Weekly Chore Audit: Week {year} {date_range_str}"}}]
     
     sections = []
     if audit_report["on_time"]:
-        names = ", ".join([f"<@{u}>" for u in audit_report["on_time"]])
+        names = ", ".join([format_user_mention(u) for u in audit_report["on_time"]])
         sections.append(f"✅ *Completed on time:* {names}")
     
     if audit_report["missed"]:
         really_missed = [u for u in audit_report["missed"] if u not in audit_report["on_time"]]
         if really_missed:
-            names = ", ".join([f"<@{u}>" for u in really_missed])
+            names = ", ".join([format_user_mention(u) for u in really_missed])
             sections.append(f"⚠️ *Missed / Unreported:* {names}")
         
     if audit_report["late_approved"]:
-        late_names = ", ".join([f"<@{u}> ({w})" for u, w in audit_report["late_approved"]])
+        late_names = ", ".join([f"{format_user_mention(u)} ({w})" for u, w in audit_report["late_approved"]])
         sections.append(f"🕰️ *Late Updates Recorded:* {late_names}")
 
     if not sections:

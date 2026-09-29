@@ -4,9 +4,9 @@ import task_assignment
 
 USER_NAMES = {
     "U0AN4FD067K": "Pab",
-    "U0ATA3GRBRD": "Angela",
     "U0ATA3JK24X": "Josie",
-    "U0AU4DWH2V7": "Kika"
+    "U0AU4DWH2V7": "Kika",
+    "daria": "Daria"
 }
 
 def run_simulation(weeks=52):
@@ -15,7 +15,8 @@ def run_simulation(weeks=52):
         "users": {
             uid: {
                 "name": name,
-                "bathroom_type": "downstairs" if name == "Pab" else "upstairs"
+                "bathroom_type": "downstairs" if name == "Pab" else "upstairs",
+                "is_slack_member": False if uid == "daria" else True
             }
             for uid, name in USER_NAMES.items()
         }
@@ -81,7 +82,7 @@ def run_simulation(weeks=52):
     upstairs_uids = [u for u in USER_NAMES.keys() if ledger["users"][u].get("bathroom_type") == "upstairs"]
     upstairs_counts = [stats[u]["Upstairs Bathroom"] for u in upstairs_uids]
     upstairs_spread = max(upstairs_counts) - min(upstairs_counts)
-    print(f"  • Upstairs Bathroom Spread: {upstairs_spread} (Max difference: {upstairs_spread} times between Angela, Josie, and Kika)")
+    print(f"  • Upstairs Bathroom Spread: {upstairs_spread} (Max difference: {upstairs_spread} times between upstairs housemates)")
     
     assert collisions == 0, "Collisions detected!"
     assert back_to_backs == 0, "Back-to-back repeats detected!"

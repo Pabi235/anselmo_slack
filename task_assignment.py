@@ -161,6 +161,10 @@ def ensure_user_state(ledger):
             # Default fallback: Pab is downstairs, others upstairs
             udata["bathroom_type"] = "downstairs" if uid == "U0AN4FD067K" else "upstairs"
 
+        if "is_slack_member" not in udata:
+            # Default to True for Slack IDs (e.g. U0AN4FD067K), False for non-Slack members (e.g. daria)
+            udata["is_slack_member"] = str(uid).startswith("U") and len(str(uid)) >= 9
+
         if "upstairs_bathroom_count" not in udata:
             udata["upstairs_bathroom_count"] = 0
             udata["last_upstairs_bathroom_week"] = None
@@ -169,6 +173,12 @@ def ensure_user_state(ledger):
                 if "Upstairs Bathroom" in w_assign:
                     udata["upstairs_bathroom_count"] += 1
                     udata["last_upstairs_bathroom_week"] = w
+
+def format_user_mention(user_id, user_data):
+    """Formats a user mention for Slack: bold @tag for Slack members, bold name for non-Slack members."""
+    if str(user_id).startswith("U") and len(str(user_id)) >= 9 and user_data.get("is_slack_member", True):
+        return f"*<@{user_id}>*"
+    return f"*{user_data.get('name', user_id)}*"
 
 def calculate_assignments(ledger, home_users, current_week_str=""):
     print(f"🧮 [Logic] Assigning for: {', '.join([ledger['users'][u]['name'] for u in home_users])}")
@@ -292,7 +302,8 @@ def main():
     
     for user_id, tasks in assignments.items():
         task_list = [f"• *{t}*: _{CHORE_DETAILS.get(t, '')}_" for t in tasks]
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<@{user_id}>*\n" + "\n".join(task_list)}})
+        user_header = format_user_mention(user_id, ledger["users"][user_id])
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"{user_header}\n" + "\n".join(task_list)}})
     
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✨ *Friendly reminder: Please ensure cleaning is done by {deadline}!*"}]})
     
